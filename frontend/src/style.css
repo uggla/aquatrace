@@ -182,6 +182,80 @@ body {
   box-shadow: var(--aquatrace-shadow);
 }
 
+.fullscreen-button {
+  position: absolute;
+  top: 86px;
+  right: 10px;
+  z-index: 700;
+  display: flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 2px solid rgb(0 0 0 / 0.2);
+  border-radius: 4px;
+  background: white;
+  box-shadow: 0 1px 5px rgb(0 0 0 / 0.35);
+}
+
+.fullscreen-button:hover,
+.fullscreen-button:focus {
+  background: #f4f4f4;
+}
+
+.fullscreen-button span {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.fullscreen-button span::before,
+.fullscreen-button span::after {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-color: #111;
+  content: '';
+}
+
+.fullscreen-button span::before {
+  top: 0;
+  left: 0;
+  border-top: 2px solid;
+  border-left: 2px solid;
+  box-shadow: 10px 0 0 -2px white, 10px 0 0 0 #111;
+}
+
+.fullscreen-button span::after {
+  right: 0;
+  bottom: 0;
+  border-right: 2px solid;
+  border-bottom: 2px solid;
+  box-shadow: -10px 0 0 -2px white, -10px 0 0 0 #111;
+}
+
+.fullscreen-button.active span {
+  transform: rotate(180deg);
+}
+
+.map-shell:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  background: #dfe8ec;
+}
+
+.map-shell:fullscreen .route-map {
+  height: 100vh;
+  min-height: 100vh;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .map-empty {
   position: absolute;
   inset: 18px auto auto 18px;

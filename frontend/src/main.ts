@@ -45,6 +45,8 @@ const distanceLabel = mustQuery<HTMLSpanElement>('#distance-label');
 const waterCount = mustQuery<HTMLSpanElement>('#water-count');
 const fileSummary = mustQuery<HTMLParagraphElement>('#file-summary');
 const mapEmpty = mustQuery<HTMLDivElement>('#map-empty');
+const mapShell = mustQuery<HTMLDivElement>('.map-shell');
+const fullscreenButton = mustQuery<HTMLButtonElement>('#fullscreen-button');
 const waterTable = mustQuery<HTMLTableSectionElement>('#water-table');
 const filterButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-distance]'));
 
@@ -67,6 +69,15 @@ L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 markerLayer.addTo(map);
+
+fullscreenButton.addEventListener('click', () => {
+  void toggleFullscreen();
+});
+
+document.addEventListener('fullscreenchange', () => {
+  updateFullscreenButton();
+  window.setTimeout(() => map.invalidateSize(), 100);
+});
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -269,6 +280,32 @@ function waterIcon(selected: boolean): L.DivIcon {
     iconAnchor: [15, 39],
     popupAnchor: [0, -36]
   });
+}
+
+async function toggleFullscreen(): Promise<void> {
+  if (!document.fullscreenEnabled) {
+    setStatus('Fullscreen mode is not available in this browser.', 'error');
+    return;
+  }
+
+  try {
+    if (document.fullscreenElement === mapShell) {
+      await document.exitFullscreen();
+      return;
+    }
+
+    await mapShell.requestFullscreen();
+  } catch (error) {
+    console.error(error);
+    setStatus('The map could not be opened fullscreen.', 'error');
+  }
+}
+
+function updateFullscreenButton(): void {
+  const fullscreen = document.fullscreenElement === mapShell;
+  fullscreenButton.classList.toggle('active', fullscreen);
+  fullscreenButton.setAttribute('aria-label', fullscreen ? 'Exit map fullscreen' : 'Open map fullscreen');
+  fullscreenButton.title = fullscreen ? 'Exit fullscreen' : 'Fullscreen map';
 }
 
 function readableError(code: string): string {
