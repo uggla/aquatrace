@@ -295,6 +295,29 @@ body {
   white-space: nowrap;
 }
 
+.table-wrap tbody tr[data-osm-id] {
+  cursor: pointer;
+}
+
+.table-wrap tbody tr[data-osm-id]:hover {
+  background: #f4f9fb;
+}
+
+.table-wrap tbody tr[data-osm-id]:focus-visible {
+  outline: 3px solid rgb(16 107 163 / 0.28);
+  outline-offset: -3px;
+}
+
+.table-wrap tbody tr.selected {
+  background: #fff1ee;
+  box-shadow: inset 4px 0 0 #c83d2c;
+}
+
+.table-wrap tbody tr.selected .offset-pill {
+  background: #ffe2dd;
+  color: #9d2b20;
+}
+
 .table-wrap td:nth-child(3) {
   white-space: normal;
 }
@@ -362,6 +385,11 @@ body {
   background: linear-gradient(145deg, #4d9fe3, #176eaf);
   box-shadow: 0 4px 10px rgb(19 58 85 / 0.34);
   transform: rotate(-45deg);
+}
+
+.water-marker.selected span {
+  background: linear-gradient(145deg, #ef6b5a, #c83d2c);
+  box-shadow: 0 4px 12px rgb(116 31 22 / 0.38);
 }
 
 .water-marker span::before {

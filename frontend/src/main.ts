@@ -50,6 +50,7 @@ const filterButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[
 
 let currentAnalysis: AnalyzeResponse | null = null;
 let selectedDistance = 200;
+let selectedWaterPointId: number | null = null;
 let routeLayer: L.Polyline | null = null;
 let markerLayer = L.layerGroup();
 
@@ -111,6 +112,7 @@ async function analyzeRoute(): Promise<void> {
     }
 
     currentAnalysis = (await response.json()) as AnalyzeResponse;
+    selectedWaterPointId = null;
     renderAnalysis();
     setStatus('', 'neutral');
   } catch (error) {
@@ -131,6 +133,12 @@ function renderAnalysis(): void {
   const visibleWaterPoints = currentAnalysis.water_points.filter(
     (point) => point.distance_to_route_m <= selectedDistance
   );
+  if (
+    selectedWaterPointId !== null &&
+    !visibleWaterPoints.some((point) => point.osm_id === selectedWaterPointId)
+  ) {
+    selectedWaterPointId = null;
+  }
   waterCount.textContent = `${visibleWaterPoints.length} ${visibleWaterPoints.length === 1 ? 'water point' : 'water points'}`;
   renderTable(visibleWaterPoints);
 }
@@ -166,7 +174,8 @@ function renderMap(analysis: AnalyzeResponse): void {
   }).addTo(map);
 
   for (const point of visibleWaterPoints) {
-    L.marker([point.lat, point.lon], { icon: waterIcon() })
+    const selected = point.osm_id === selectedWaterPointId;
+    L.marker([point.lat, point.lon], { icon: waterIcon(selected), zIndexOffset: selected ? 1000 : 0 })
       .bindPopup(
         `<strong>${escapeHtml(point.name ?? 'Drinking Water')}</strong><br>Km: ${point.km.toFixed(
           1
@@ -191,7 +200,7 @@ function renderTable(points: WaterPoint[]): void {
 
   waterTable.innerHTML = points
     .map(
-      (point) => `<tr>
+      (point) => `<tr data-osm-id="${point.osm_id}" class="${point.osm_id === selectedWaterPointId ? 'selected' : ''}" tabindex="0">
         <td><strong>${point.km.toFixed(1)}</strong></td>
         <td><span class="offset-pill">${Math.round(point.distance_to_route_m)} m</span></td>
         <td>
@@ -201,6 +210,16 @@ function renderTable(points: WaterPoint[]): void {
       </tr>`
     )
     .join('');
+
+  for (const row of waterTable.querySelectorAll<HTMLTableRowElement>('tr[data-osm-id]')) {
+    row.addEventListener('click', () => selectWaterPoint(Number(row.dataset.osmId)));
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectWaterPoint(Number(row.dataset.osmId));
+      }
+    });
+  }
 }
 
 function updateFilterButtons(): void {
@@ -237,9 +256,14 @@ function escapeHtml(value: string): string {
   });
 }
 
-function waterIcon(): L.DivIcon {
+function selectWaterPoint(osmId: number): void {
+  selectedWaterPointId = selectedWaterPointId === osmId ? null : osmId;
+  renderAnalysis();
+}
+
+function waterIcon(selected: boolean): L.DivIcon {
   return L.divIcon({
-    className: 'water-marker',
+    className: selected ? 'water-marker selected' : 'water-marker',
     html: '<span aria-hidden="true"></span>',
     iconSize: [30, 42],
     iconAnchor: [15, 39],
