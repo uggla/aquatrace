@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="AquaTrace finds drinking water points along GPX routes."
+    />
+    <title>AquaTrace</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="page-header">
+        <div>
+          <h1>AquaTrace</h1>
+          <p>Find drinking water along your GPX routes.</p>
+        </div>
+        <p class="attribution">OpenTopoMap + OpenStreetMap</p>
+      </header>
+
+      <section class="controls-band" aria-label="Route analysis controls">
+        <form id="upload-form" class="upload-form">
+          <label for="gpx-file">Upload GPX</label>
+          <div class="upload-row">
+            <input id="gpx-file" name="file" type="file" accept=".gpx,application/gpx+xml" />
+            <button id="analyze-button" type="submit">Analyze route</button>
+          </div>
+        </form>
+
+        <fieldset class="distance-filter">
+          <legend>Maximum distance <span id="distance-label">200 m</span></legend>
+          <div class="segmented" role="group" aria-label="Maximum distance to route">
+            <button type="button" data-distance="50">50 m</button>
+            <button type="button" data-distance="100">100 m</button>
+            <button type="button" data-distance="200" class="active">200 m</button>
+            <button type="button" data-distance="500">500 m</button>
+          </div>
+        </fieldset>
+      </section>
+
+      <section id="status-line" class="status-line" aria-live="polite">
+        <p id="status-message" data-tone="neutral">Choose a GPX route to start.</p>
+      </section>
+
+      <section class="workspace">
+        <section class="analysis-summary" aria-label="Route analysis summary">
+          <div class="results-header">
+            <div>
+              <h2>Route analysis</h2>
+              <p id="file-summary">No GPX loaded</p>
+            </div>
+            <span id="water-count" class="count-pill">0 water points</span>
+          </div>
+
+          <div class="metrics" id="metrics">
+            <div>
+              <span class="metric-value" id="distance-metric">-</span>
+              <span class="metric-label">Distance</span>
+            </div>
+            <div>
+              <span class="metric-value" id="gain-metric">-</span>
+              <span class="metric-label">D+</span>
+            </div>
+            <div>
+              <span class="metric-value" id="loss-metric">-</span>
+              <span class="metric-label">D-</span>
+            </div>
+            <div>
+              <span class="metric-value" id="range-metric">-</span>
+              <span class="metric-label">Elevation</span>
+            </div>
+          </div>
+        </section>
+
+        <div class="map-shell">
+          <div id="map" class="route-map" aria-label="Route map"></div>
+          <div id="map-empty" class="map-empty">
+            <strong>No route loaded</strong>
+            <span>Upload a GPX file to display the track and nearby water points.</span>
+          </div>
+        </div>
+
+        <aside class="results-panel" aria-label="Analysis results">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Km</th>
+                  <th>Offset</th>
+                  <th>Name</th>
+                </tr>
+              </thead>
+              <tbody id="water-table">
+                <tr>
+                  <td colspan="3">No route analyzed yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

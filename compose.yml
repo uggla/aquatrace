@@ -1,0 +1,28 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    user: "${AQUATRACE_UID:-1000}:${AQUATRACE_GID:-1000}"
+    environment:
+      DATABASE_URL: sqlite:/data/aquatrace.db
+      BIND_ADDR: 0.0.0.0:3000
+      OVERPASS_URL: https://overpass-api.de/api/interpreter
+      MAX_UPLOAD_BYTES: "10485760"
+      MAX_ANALYSIS_DISTANCE_M: "500"
+      ROUTE_CACHE_TTL_SECONDS: "86400"
+      OSM_CACHE_TTL_SECONDS: "2592000"
+      RUST_LOG: aquatrace_backend=info,tower_http=info
+    expose:
+      - "3000"
+    volumes:
+      - ./backend/data:/data:Z
+    restart: unless-stopped
