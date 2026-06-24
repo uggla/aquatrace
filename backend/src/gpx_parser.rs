@@ -4,6 +4,8 @@ use anyhow::{Context, Result, anyhow};
 
 use crate::types::{RoutePoint, RouteSummary};
 
+const ELEVATION_DEADBAND_M: f64 = 10.0;
+
 pub fn parse_gpx_route(bytes: &[u8]) -> Result<RouteSummary> {
     let gpx = gpx::read(Cursor::new(bytes)).context("invalid GPX document")?;
     let mut points = Vec::new();
@@ -30,8 +32,6 @@ pub fn parse_gpx_route(bytes: &[u8]) -> Result<RouteSummary> {
 
 pub fn summarize_route(points: Vec<RoutePoint>) -> RouteSummary {
     let mut distance_m = 0.0;
-    let mut elevation_gain_m = 0.0;
-    let mut elevation_loss_m = 0.0;
     let mut min_elevation_m: Option<f64> = None;
     let mut max_elevation_m: Option<f64> = None;
 
@@ -44,16 +44,9 @@ pub fn summarize_route(points: Vec<RoutePoint>) -> RouteSummary {
 
     for pair in points.windows(2) {
         distance_m += haversine_m(pair[0], pair[1]);
-
-        if let (Some(previous), Some(next)) = (pair[0].ele, pair[1].ele) {
-            let delta = next - previous;
-            if delta > 0.0 {
-                elevation_gain_m += delta;
-            } else {
-                elevation_loss_m += -delta;
-            }
-        }
     }
+
+    let (elevation_gain_m, elevation_loss_m) = elevation_gain_loss(&points);
 
     RouteSummary {
         distance_m,
@@ -63,6 +56,51 @@ pub fn summarize_route(points: Vec<RoutePoint>) -> RouteSummary {
         max_elevation_m,
         points,
     }
+}
+
+fn elevation_gain_loss(points: &[RoutePoint]) -> (f64, f64) {
+    let mut elevations = points.iter().filter_map(|point| point.ele);
+    let Some(first) = elevations.next() else {
+        return (0.0, 0.0);
+    };
+
+    let mut gain = 0.0;
+    let mut loss = 0.0;
+    let mut anchor = first;
+    let mut high = first;
+    let mut low = first;
+    let mut direction = 0_i8;
+
+    for ele in elevations {
+        if direction >= 0 {
+            high = high.max(ele);
+            if high - ele >= ELEVATION_DEADBAND_M {
+                gain += high - anchor;
+                anchor = high;
+                low = ele;
+                direction = -1;
+            }
+        }
+
+        if direction <= 0 {
+            low = low.min(ele);
+            if ele - low >= ELEVATION_DEADBAND_M {
+                loss += anchor - low;
+                anchor = low;
+                high = ele;
+                direction = 1;
+            }
+        }
+    }
+
+    if direction >= 0 {
+        gain += high - anchor;
+    }
+    if direction <= 0 {
+        loss += anchor - low;
+    }
+
+    (gain, loss)
 }
 
 pub fn haversine_m(a: RoutePoint, b: RoutePoint) -> f64 {
@@ -106,6 +144,107 @@ mod tests {
         assert_eq!(summary.elevation_loss_m, 40.0);
         assert_eq!(summary.min_elevation_m, Some(90.0));
         assert_eq!(summary.max_elevation_m, Some(130.0));
+    }
+
+    #[test]
+    fn ignores_small_elevation_noise() {
+        let summary = summarize_route(vec![
+            RoutePoint {
+                lat: 45.0,
+                lon: 5.0,
+                ele: Some(100.0),
+            },
+            RoutePoint {
+                lat: 45.001,
+                lon: 5.0,
+                ele: Some(101.5),
+            },
+            RoutePoint {
+                lat: 45.002,
+                lon: 5.0,
+                ele: Some(100.4),
+            },
+            RoutePoint {
+                lat: 45.003,
+                lon: 5.0,
+                ele: Some(102.0),
+            },
+            RoutePoint {
+                lat: 45.004,
+                lon: 5.0,
+                ele: Some(110.0),
+            },
+        ]);
+
+        assert_eq!(summary.elevation_gain_m, 10.0);
+        assert_eq!(summary.elevation_loss_m, 0.0);
+    }
+
+    #[test]
+    fn counts_elevation_after_direction_change_exceeds_deadband() {
+        let summary = summarize_route(vec![
+            RoutePoint {
+                lat: 45.0,
+                lon: 5.0,
+                ele: Some(100.0),
+            },
+            RoutePoint {
+                lat: 45.001,
+                lon: 5.0,
+                ele: Some(110.0),
+            },
+            RoutePoint {
+                lat: 45.002,
+                lon: 5.0,
+                ele: Some(108.0),
+            },
+            RoutePoint {
+                lat: 45.003,
+                lon: 5.0,
+                ele: Some(95.0),
+            },
+        ]);
+
+        assert_eq!(summary.elevation_gain_m, 10.0);
+        assert_eq!(summary.elevation_loss_m, 15.0);
+    }
+
+    #[ignore = "long fixture regression; run with --ignored --nocapture"]
+    #[test]
+    fn very_long_trace_elevation_stays_between_reference_apps() {
+        let summary = parse_gpx_route(include_bytes!("../tests/fixtures/very_long_trace.gpx"))
+            .expect("very long trace fixture should parse");
+
+        eprintln!(
+            "distance={:.0}km gain={:.0}m loss={:.0}m",
+            summary.distance_m / 1000.0,
+            summary.elevation_gain_m,
+            summary.elevation_loss_m
+        );
+        assert!((summary.distance_m / 1000.0 - 1625.0).abs() < 5.0);
+        assert!(summary.elevation_gain_m > 9_634.0);
+        assert!(summary.elevation_gain_m < 11_725.0);
+        assert!(summary.elevation_loss_m > 9_415.0);
+        assert!(summary.elevation_loss_m < 11_506.0);
+    }
+
+    #[ignore = "long fixture regression; run with --ignored --nocapture"]
+    #[test]
+    fn chartreuse_elevation_stays_between_reference_apps() {
+        let summary = parse_gpx_route(include_bytes!("../tests/fixtures/Tour_Chartreuse.gpx"))
+            .expect("Chartreuse fixture should parse");
+
+        eprintln!(
+            "distance={:.1}km gain={:.0}m loss={:.0}m",
+            summary.distance_m / 1000.0,
+            summary.elevation_gain_m,
+            summary.elevation_loss_m
+        );
+        assert!((summary.distance_m / 1000.0 - 86.6).abs() < 1.0);
+        assert!(summary.elevation_gain_m > 1_996.0);
+        assert!(summary.elevation_gain_m < 2_244.0);
+        assert!(summary.elevation_loss_m > 1_995.0);
+        assert!(summary.elevation_loss_m < 2_245.0);
     }
 
     #[test]
