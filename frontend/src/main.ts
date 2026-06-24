@@ -47,6 +47,7 @@ const fileSummary = mustQuery<HTMLParagraphElement>('#file-summary');
 const mapEmpty = mustQuery<HTMLDivElement>('#map-empty');
 const mapShell = mustQuery<HTMLDivElement>('.map-shell');
 const fullscreenButton = mustQuery<HTMLButtonElement>('#fullscreen-button');
+const elevationProfile = mustQuery<HTMLDivElement>('#elevation-profile');
 const waterTable = mustQuery<HTMLTableSectionElement>('#water-table');
 const filterButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-distance]'));
 
@@ -151,6 +152,7 @@ function renderAnalysis(): void {
     selectedWaterPointId = null;
   }
   waterCount.textContent = `${visibleWaterPoints.length} ${visibleWaterPoints.length === 1 ? 'water point' : 'water points'}`;
+  renderElevationProfile(currentAnalysis.route, visibleWaterPoints);
   renderTable(visibleWaterPoints);
 }
 
@@ -232,6 +234,175 @@ function renderTable(points: WaterPoint[]): void {
       }
     });
   }
+}
+
+function renderElevationProfile(route: RouteSummary, waterPoints: WaterPoint[]): void {
+  const series = elevationSeries(route);
+  if (series.length < 2) {
+    elevationProfile.innerHTML = '<p>No elevation data available for this route.</p>';
+    return;
+  }
+
+  const width = 920;
+  const height = 260;
+  const margin = { top: 16, right: 18, bottom: 34, left: 54 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const maxDistance = Math.max(series.at(-1)?.distanceM ?? route.distance_m, route.distance_m, 1);
+  const elevations = series.map((point) => point.elevationM);
+  const minElevation = Math.min(...elevations);
+  const maxElevation = Math.max(...elevations);
+  const elevationPadding = Math.max((maxElevation - minElevation) * 0.08, 12);
+  const yMin = minElevation - elevationPadding;
+  const yMax = maxElevation + elevationPadding;
+
+  const xForDistance = (distanceM: number) =>
+    margin.left + (Math.min(Math.max(distanceM, 0), maxDistance) / maxDistance) * plotWidth;
+  const yForElevation = (elevationM: number) =>
+    margin.top + ((yMax - elevationM) / Math.max(yMax - yMin, 1)) * plotHeight;
+  const profilePoints = downsampleSeries(series, 900)
+    .map((point) => `${xForDistance(point.distanceM).toFixed(1)},${yForElevation(point.elevationM).toFixed(1)}`)
+    .join(' ');
+  const xTicks = buildTicks(0, maxDistance / 1000, 5);
+  const yTicks = buildTicks(yMin, yMax, 4);
+
+  elevationProfile.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Elevation profile with water points">
+      <rect class="profile-plot" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}"></rect>
+      ${yTicks
+        .map((tick) => {
+          const y = yForElevation(tick);
+          return `<line class="profile-grid" x1="${margin.left}" y1="${y.toFixed(1)}" x2="${
+            width - margin.right
+          }" y2="${y.toFixed(1)}"></line>
+          <text class="profile-axis-label" x="${margin.left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end">${Math.round(
+            tick
+          )} m</text>`;
+        })
+        .join('')}
+      ${xTicks
+        .map((tick) => {
+          const x = xForDistance(tick * 1000);
+          return `<line class="profile-tick" x1="${x.toFixed(1)}" y1="${height - margin.bottom}" x2="${x.toFixed(
+            1
+          )}" y2="${height - margin.bottom + 5}"></line>
+          <text class="profile-axis-label" x="${x.toFixed(1)}" y="${height - 10}" text-anchor="middle">${formatTick(
+            tick
+          )} km</text>`;
+        })
+        .join('')}
+      <polyline class="profile-line" points="${profilePoints}"></polyline>
+      ${waterPoints
+        .map((point) => {
+          const distanceM = point.km * 1000;
+          const elevation = interpolateElevation(series, distanceM);
+          if (elevation === null) {
+            return '';
+          }
+          const selected = point.osm_id === selectedWaterPointId;
+          return `<g class="profile-marker-hit" data-osm-id="${point.osm_id}" role="button" tabindex="0" aria-label="${escapeHtml(
+            point.name ?? 'Water point'
+          )} at ${point.km.toFixed(1)} km">
+            <circle class="profile-marker ${selected ? 'selected' : ''}" cx="${xForDistance(distanceM).toFixed(
+              1
+            )}" cy="${yForElevation(elevation).toFixed(1)}" r="${selected ? 7 : 6}"></circle>
+          </g>`;
+        })
+        .join('')}
+    </svg>`;
+
+  for (const marker of elevationProfile.querySelectorAll<SVGElement>('.profile-marker-hit')) {
+    marker.addEventListener('click', () => selectWaterPoint(Number(marker.dataset.osmId)));
+    marker.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectWaterPoint(Number(marker.dataset.osmId));
+      }
+    });
+  }
+}
+
+function elevationSeries(route: RouteSummary): Array<{ distanceM: number; elevationM: number }> {
+  const series: Array<{ distanceM: number; elevationM: number }> = [];
+  let distanceM = 0;
+
+  for (const [index, point] of route.points.entries()) {
+    if (index > 0) {
+      const previous = route.points[index - 1];
+      distanceM += distanceBetween(previous, point);
+    }
+    if (point.ele !== undefined && Number.isFinite(point.ele)) {
+      series.push({ distanceM, elevationM: point.ele });
+    }
+  }
+
+  return series;
+}
+
+function downsampleSeries<T>(series: T[], maxPoints: number): T[] {
+  if (series.length <= maxPoints) {
+    return series;
+  }
+
+  const sampled: T[] = [];
+  const step = (series.length - 1) / (maxPoints - 1);
+  for (let index = 0; index < maxPoints; index += 1) {
+    sampled.push(series[Math.round(index * step)]);
+  }
+  return sampled;
+}
+
+function interpolateElevation(series: Array<{ distanceM: number; elevationM: number }>, distanceM: number): number | null {
+  if (series.length === 0) {
+    return null;
+  }
+  if (distanceM <= series[0].distanceM) {
+    return series[0].elevationM;
+  }
+
+  for (let index = 1; index < series.length; index += 1) {
+    const current = series[index];
+    if (distanceM <= current.distanceM) {
+      const previous = series[index - 1];
+      const span = Math.max(current.distanceM - previous.distanceM, 1);
+      const ratio = (distanceM - previous.distanceM) / span;
+      return previous.elevationM + (current.elevationM - previous.elevationM) * ratio;
+    }
+  }
+
+  return series.at(-1)?.elevationM ?? null;
+}
+
+function buildTicks(min: number, max: number, count: number): number[] {
+  if (max <= min) {
+    return [min];
+  }
+  const ticks: number[] = [];
+  const step = (max - min) / Math.max(count - 1, 1);
+  for (let index = 0; index < count; index += 1) {
+    ticks.push(min + step * index);
+  }
+  return ticks;
+}
+
+function formatTick(value: number): string {
+  return value >= 10 ? String(Math.round(value)) : value.toFixed(1);
+}
+
+function distanceBetween(a: RoutePoint, b: RoutePoint): number {
+  const earthRadiusM = 6_371_000;
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+  const deltaLat = toRadians(b.lat - a.lat);
+  const deltaLon = toRadians(b.lon - a.lon);
+  const haversine =
+    Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLon / 2) * Math.sin(deltaLon / 2);
+  return earthRadiusM * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function toRadians(value: number): number {
+  return (value * Math.PI) / 180;
 }
 
 function updateFilterButtons(): void {

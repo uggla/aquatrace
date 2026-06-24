@@ -360,6 +360,107 @@ body {
   font-size: 0.85rem;
 }
 
+.elevation-profile {
+  overflow: hidden;
+  border: 1px solid var(--aquatrace-border);
+  border-radius: 8px;
+  background: white;
+  box-shadow: var(--aquatrace-shadow);
+}
+
+.profile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 0;
+}
+
+.profile-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.profile-header span {
+  color: var(--aquatrace-muted);
+  font-size: 0.85rem;
+}
+
+.profile-chart {
+  min-height: 260px;
+  padding: 4px 10px 10px;
+}
+
+.profile-chart p {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+  margin: 0;
+  color: var(--aquatrace-muted);
+}
+
+.profile-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.profile-plot {
+  fill: #f7fafb;
+  stroke: var(--aquatrace-border);
+}
+
+.profile-grid {
+  stroke: #dfe9ee;
+  stroke-width: 1;
+}
+
+.profile-tick {
+  stroke: #91a8b4;
+  stroke-width: 1;
+}
+
+.profile-axis-label {
+  fill: var(--aquatrace-muted);
+  font-size: 0.72rem;
+}
+
+.profile-line {
+  fill: none;
+  stroke: var(--aquatrace-blue);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.profile-marker-hit {
+  cursor: pointer;
+  outline: none;
+}
+
+.profile-marker {
+  fill: #176eaf;
+  stroke: white;
+  stroke-width: 3;
+  filter: drop-shadow(0 2px 4px rgb(19 58 85 / 0.28));
+}
+
+.profile-marker.selected {
+  fill: #c83d2c;
+  filter: drop-shadow(0 2px 5px rgb(116 31 22 / 0.34));
+}
+
+.profile-marker-hit:hover .profile-marker,
+.profile-marker-hit:focus-visible .profile-marker {
+  stroke: #0b4d75;
+  stroke-width: 4;
+}
+
+.profile-marker-hit:hover .profile-marker.selected,
+.profile-marker-hit:focus-visible .profile-marker.selected {
+  stroke: #7f2118;
+}
+
 .table-wrap {
   overflow-x: auto;
   border: 1px solid var(--aquatrace-border);
