@@ -109,7 +109,7 @@ async function analyzeRoute(): Promise<void> {
 
   setLoading(true);
   fileSummary.textContent = `${file.name} - ${formatFileSize(file.size)}`;
-  setStatus('Analyzing route and querying OpenStreetMap...', 'neutral');
+  setStatus('Analyzing route with local OpenStreetMap data...', 'neutral');
 
   try {
     const response = await fetch('/api/analyze', {

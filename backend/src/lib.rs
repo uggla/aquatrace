@@ -1,4 +1,9 @@
-use std::{net::SocketAddr, path::Path, str::FromStr, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -21,35 +26,38 @@ use tracing::warn;
 pub mod geometry;
 pub mod gpx_parser;
 pub mod hash;
-pub mod overpass;
+pub mod osm_import;
 pub mod store;
 pub mod types;
 
 use geometry::project_water_points;
 use gpx_parser::parse_gpx_route;
 use hash::sha256_hex;
-use overpass::OverpassClient;
 use types::{AnalyzeResponse, BBox};
 
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_ANALYSIS_DISTANCE_M: f64 = 500.0;
+const DEFAULT_OSM_PBF_URL: &str = "https://download.geofabrik.de/europe-latest.osm.pbf";
+const DEFAULT_OSM_IMPORT_INTERVAL_SECONDS: i64 = 1_296_000;
+const DEFAULT_OSM_IMPORT_DIR: &str = "data/osm";
 
 #[derive(Clone)]
 pub struct AppState {
     pool: SqlitePool,
     config: Arc<Config>,
-    overpass: OverpassClient,
 }
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub database_url: String,
-    pub overpass_url: String,
     pub max_upload_bytes: usize,
     pub max_analysis_distance_m: f64,
+    pub osm_pbf_url: String,
+    pub osm_import_interval: Duration,
+    pub osm_import_dir: PathBuf,
+    pub osm_import_on_startup: bool,
     pub route_cache_ttl: Duration,
-    pub osm_cache_ttl: Duration,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -105,13 +113,18 @@ pub fn ensure_sqlite_parent_exists(database_url: &str) -> Result<()> {
 pub async fn app_state(config: Config) -> Result<AppState> {
     ensure_sqlite_parent_exists(&config.database_url)?;
     let pool = connect_database(&config.database_url).await?;
-    let overpass = OverpassClient::new(config.overpass_url.clone());
 
-    Ok(AppState {
+    if config.osm_import_on_startup {
+        osm_import::ensure_initial_data(&pool, &config).await?;
+    }
+
+    let state = AppState {
         pool,
         config: Arc::new(config),
-        overpass,
-    })
+    };
+    osm_import::spawn_import_scheduler(state.pool.clone(), Arc::clone(&state.config));
+
+    Ok(state)
 }
 
 async fn health() -> &'static str {
@@ -134,22 +147,7 @@ async fn analyze(
     let route_bbox = BBox::from_points(&route.points)
         .ok_or_else(|| ApiError::bad_request(anyhow::anyhow!("empty route")))?;
     let osm_bbox = route_bbox.expand_meters(state.config.max_analysis_distance_m);
-
-    let cached_coverage = store::has_fresh_coverage(&state.pool, osm_bbox, now).await?;
-    let water_points = if cached_coverage {
-        store::water_points_in_bbox(&state.pool, osm_bbox).await?
-    } else {
-        let points = state.overpass.fetch_drinking_water(osm_bbox).await?;
-        store::refresh_water_points(
-            &state.pool,
-            osm_bbox,
-            &points,
-            now,
-            state.config.osm_cache_ttl,
-        )
-        .await?;
-        points
-    };
+    let water_points = store::water_points_in_bbox(&state.pool, osm_bbox).await?;
 
     let mut projected =
         project_water_points(&route, &water_points, state.config.max_analysis_distance_m);
@@ -215,22 +213,42 @@ impl Config {
             .unwrap_or_else(|_| "0.0.0.0:3000".to_owned())
             .parse()
             .context("BIND_ADDR must be a socket address, for example 0.0.0.0:3000")?;
-        let overpass_url = std::env::var("OVERPASS_URL")
-            .unwrap_or_else(|_| "https://overpass-api.de/api/interpreter".to_owned());
+        let osm_pbf_url =
+            std::env::var("OSM_PBF_URL").unwrap_or_else(|_| DEFAULT_OSM_PBF_URL.to_owned());
+        let osm_import_dir = std::env::var("OSM_IMPORT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_OSM_IMPORT_DIR));
 
         Ok(Self {
             bind_addr,
             database_url,
-            overpass_url,
             max_upload_bytes: parse_usize_env("MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)?,
             max_analysis_distance_m: parse_f64_env(
                 "MAX_ANALYSIS_DISTANCE_M",
                 DEFAULT_MAX_ANALYSIS_DISTANCE_M,
             )?,
+            osm_pbf_url,
+            osm_import_interval: Duration::seconds(parse_i64_env(
+                "OSM_IMPORT_INTERVAL_SECONDS",
+                DEFAULT_OSM_IMPORT_INTERVAL_SECONDS,
+            )?),
+            osm_import_dir,
+            osm_import_on_startup: parse_bool_env("OSM_IMPORT_ON_STARTUP", true)?,
             route_cache_ttl: Duration::seconds(parse_i64_env("ROUTE_CACHE_TTL_SECONDS", 86_400)?),
-            osm_cache_ttl: Duration::seconds(parse_i64_env("OSM_CACHE_TTL_SECONDS", 2_592_000)?),
         })
     }
+}
+
+fn parse_bool_env(name: &str, default: bool) -> Result<bool> {
+    std::env::var(name)
+        .ok()
+        .map(|value| match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            _ => Err(anyhow::anyhow!("{name} must be a boolean")),
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(default))
 }
 
 fn parse_usize_env(name: &str, default: usize) -> Result<usize> {
@@ -324,12 +342,9 @@ mod tests {
     use serde_json::Value;
     use tempfile::TempDir;
     use tower::ServiceExt;
-    use wiremock::{
-        Mock, MockServer, ResponseTemplate,
-        matchers::{method, path},
-    };
 
     use super::*;
+    use crate::types::OsmWaterPoint;
 
     const GPX: &str = r#"<?xml version="1.0"?>
 <gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">
@@ -339,19 +354,24 @@ mod tests {
   </trkseg></trk>
 </gpx>"#;
 
-    async fn test_app(overpass_url: String) -> (Router, TempDir) {
+    async fn test_app(points: Vec<OsmWaterPoint>) -> (Router, TempDir) {
         let temp = TempDir::new().unwrap();
         let database_url = format!("sqlite:{}/aquatrace.db", temp.path().display());
         let config = Config {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             database_url,
-            overpass_url,
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
             max_analysis_distance_m: DEFAULT_MAX_ANALYSIS_DISTANCE_M,
+            osm_pbf_url: DEFAULT_OSM_PBF_URL.to_owned(),
+            osm_import_interval: Duration::days(15),
+            osm_import_dir: temp.path().join("osm"),
+            osm_import_on_startup: false,
             route_cache_ttl: Duration::days(1),
-            osm_cache_ttl: Duration::days(30),
         };
         let state = app_state(config).await.unwrap();
+        store::replace_water_points(&state.pool, &points, Utc::now())
+            .await
+            .unwrap();
         (build_router(state), temp)
     }
 
@@ -379,19 +399,13 @@ mod tests {
 
     #[tokio::test]
     async fn analyze_route_success_and_persists_cache() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/interpreter"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "elements": [
-                    {"type":"node","id":123,"lat":45.005,"lon":5.001,"tags":{"amenity":"drinking_water","name":"Village Fountain"}}
-                ]
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let (app, _temp) = test_app(format!("{}/api/interpreter", server.uri())).await;
+        let (app, _temp) = test_app(vec![OsmWaterPoint {
+            osm_id: 123,
+            lat: 45.005,
+            lon: 5.001,
+            name: Some("Village Fountain".to_owned()),
+        }])
+        .await;
         let response = app.oneshot(multipart_request(GPX)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json = response_json(response).await;
@@ -402,17 +416,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn route_cache_hit_avoids_overpass() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "elements": []
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let (app, _temp) = test_app(server.uri()).await;
+    async fn route_cache_hit_uses_cached_analysis() {
+        let (app, _temp) = test_app(vec![]).await;
         let first = app.clone().oneshot(multipart_request(GPX)).await.unwrap();
         assert_eq!(first.status(), StatusCode::OK);
         let second = app.oneshot(multipart_request(GPX)).await.unwrap();
@@ -421,8 +426,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_gpx_is_rejected() {
-        let server = MockServer::start().await;
-        let (app, _temp) = test_app(server.uri()).await;
+        let (app, _temp) = test_app(vec![]).await;
         let response = app.oneshot(multipart_request("not gpx")).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }

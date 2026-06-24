@@ -508,6 +508,35 @@ body {
   line-height: 1.45;
 }
 
+.app-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 18px;
+  color: var(--aquatrace-muted);
+  font-size: 0.92rem;
+}
+
+.made-with {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+}
+
+.footer-separator {
+  width: 1px;
+  height: 16px;
+  background: var(--aquatrace-border);
+}
+
+.logo.inline {
+  display: inline-block;
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
 @media (max-width: 980px) {
   .controls-band,
   .workspace {

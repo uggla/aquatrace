@@ -84,6 +84,25 @@ impl BBox {
             && self.max_lat >= other.max_lat
             && self.max_lon >= other.max_lon
     }
+
+    pub fn width_m(self) -> f64 {
+        let center_lat = ((self.min_lat + self.max_lat) / 2.0).to_radians();
+        let meters_per_lon = (111_320.0 * center_lat.cos().abs()).max(1.0);
+        (self.max_lon - self.min_lon).abs() * meters_per_lon
+    }
+
+    pub fn height_m(self) -> f64 {
+        (self.max_lat - self.min_lat).abs() * 111_320.0
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            min_lat: self.min_lat.min(other.min_lat),
+            min_lon: self.min_lon.min(other.min_lon),
+            max_lat: self.max_lat.max(other.max_lat),
+            max_lon: self.max_lon.max(other.max_lon),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
