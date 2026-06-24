@@ -192,6 +192,7 @@ function renderMap(analysis: AnalyzeResponse): void {
           1
         )}<br>Distance: ${Math.round(point.distance_to_route_m)} m`
       )
+      .on('click', () => selectWaterPoint(point.osm_id))
       .addTo(markerLayer);
   }
 

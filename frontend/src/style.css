@@ -398,13 +398,17 @@ body {
 }
 
 .table-wrap tbody tr.selected {
-  background: #fff1ee;
-  box-shadow: inset 4px 0 0 #c83d2c;
+  background: #ffe3dd;
+  box-shadow:
+    inset 7px 0 0 #c83d2c,
+    inset 0 0 0 1px rgb(200 61 44 / 0.22);
+  color: #7f2118;
+  font-weight: 700;
 }
 
 .table-wrap tbody tr.selected .offset-pill {
-  background: #ffe2dd;
-  color: #9d2b20;
+  background: #c83d2c;
+  color: white;
 }
 
 .table-wrap td:nth-child(3) {
