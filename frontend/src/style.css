@@ -492,18 +492,32 @@ body {
 
 .table-wrap table {
   margin: 0;
+  color: var(--aquatrace-ink);
 }
 
 .table-wrap thead th {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: white;
+  background: #eef7f9;
+  color: var(--aquatrace-blue-dark);
+  font-weight: 800;
 }
 
 .table-wrap th,
 .table-wrap td {
+  background: white;
+  border-color: #c8d7de;
   white-space: nowrap;
+}
+
+.table-wrap tbody td {
+  color: var(--aquatrace-ink);
+  font-weight: 600;
+}
+
+.table-wrap tbody tr {
+  background: white;
 }
 
 .table-wrap tbody tr[data-osm-id] {
@@ -511,7 +525,11 @@ body {
 }
 
 .table-wrap tbody tr[data-osm-id]:hover {
-  background: #f4f9fb;
+  background: #edf7fb;
+}
+
+.table-wrap tbody tr[data-osm-id]:hover td {
+  background: #edf7fb;
 }
 
 .table-wrap tbody tr[data-osm-id]:focus-visible {
@@ -520,12 +538,18 @@ body {
 }
 
 .table-wrap tbody tr.selected {
-  background: #ffe3dd;
+  background: #ffd6cc;
   box-shadow:
     inset 7px 0 0 #c83d2c,
-    inset 0 0 0 1px rgb(200 61 44 / 0.22);
-  color: #7f2118;
-  font-weight: 700;
+    inset 0 0 0 1px rgb(200 61 44 / 0.42);
+  color: #6f1b13;
+  font-weight: 800;
+}
+
+.table-wrap tbody tr.selected td {
+  background: #ffd6cc;
+  color: #6f1b13;
+  border-color: #ef9a8d;
 }
 
 .table-wrap tbody tr.selected .offset-pill {
@@ -539,15 +563,16 @@ body {
 
 .table-wrap small {
   display: block;
-  color: var(--aquatrace-muted);
+  color: #48606f;
   font-size: 0.75rem;
+  font-weight: 600;
 }
 
 .offset-pill {
   min-width: 58px;
   padding: 3px 8px;
-  background: #f4f7ee;
-  color: #496528;
+  background: #e9f3d8;
+  color: #314c16;
   font-size: 0.82rem;
 }
 
