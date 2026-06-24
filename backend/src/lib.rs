@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
+    time::Instant,
 };
 
 use anyhow::{Context, Result};
@@ -21,7 +22,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use tower_http::trace::TraceLayer;
-use tracing::warn;
+use tracing::{info, warn};
 
 pub mod geometry;
 pub mod gpx_parser;
@@ -143,21 +144,41 @@ async fn analyze(
         return Ok(Json(cached));
     }
 
+    let parse_start = Instant::now();
     let route = parse_gpx_route(&file).map_err(ApiError::bad_request)?;
+    info!(
+        points = route.points.len(),
+        elapsed_ms = parse_start.elapsed().as_millis(),
+        "parsed GPX route"
+    );
+
+    let sqlite_start = Instant::now();
     let route_bbox = BBox::from_points(&route.points)
         .ok_or_else(|| ApiError::bad_request(anyhow::anyhow!("empty route")))?;
     let osm_bbox = route_bbox.expand_meters(state.config.max_analysis_distance_m);
     let water_points = store::water_points_in_bbox(&state.pool, osm_bbox).await?;
+    info!(
+        water_point_count = water_points.len(),
+        elapsed_ms = sqlite_start.elapsed().as_millis(),
+        "loaded candidate water points"
+    );
 
+    let projection_start = Instant::now();
     let mut projected =
         project_water_points(&route, &water_points, state.config.max_analysis_distance_m);
     projected.sort_by(|a, b| a.km.partial_cmp(&b.km).unwrap_or(std::cmp::Ordering::Equal));
+    info!(
+        projected_water_point_count = projected.len(),
+        elapsed_ms = projection_start.elapsed().as_millis(),
+        "projected water points onto route"
+    );
 
     let analysis = AnalyzeResponse {
         route,
         water_points: projected,
     };
 
+    let cache_start = Instant::now();
     store::put_route_cache(
         &state.pool,
         &gpx_hash,
@@ -166,6 +187,10 @@ async fn analyze(
         state.config.route_cache_ttl,
     )
     .await?;
+    info!(
+        elapsed_ms = cache_start.elapsed().as_millis(),
+        "wrote route analysis cache"
+    );
 
     Ok(Json(analysis))
 }
