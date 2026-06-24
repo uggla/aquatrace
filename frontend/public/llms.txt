@@ -1,0 +1,17 @@
+# AquaTrace
+
+AquaTrace is a web application for analyzing GPX routes and finding nearby drinking water points from OpenStreetMap data.
+
+## Links
+
+- [Website](https://aquatrace.uggla.fr/)
+- [Sitemap](https://aquatrace.uggla.fr/sitemap.xml)
+- [Robots](https://aquatrace.uggla.fr/robots.txt)
+
+## Features
+
+- Upload a GPX route.
+- View route distance, elevation gain, elevation loss, and elevation range.
+- Find drinking water points near the route.
+- Inspect water points on the map, elevation profile, and results table.
+- Switch between OpenTopoMap and standard OpenStreetMap backgrounds.
