@@ -32,6 +32,25 @@ type AnalyzeResponse = {
   water_points: WaterPoint[];
 };
 
+type MapStyle = 'opentopo' | 'openstreetmap';
+
+const tileLayers: Record<MapStyle, { url: string; options: L.TileLayerOptions }> = {
+  opentopo: {
+    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    options: {
+      maxZoom: 17,
+      attribution: '© OpenStreetMap contributors © OpenTopoMap'
+    }
+  },
+  openstreetmap: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    options: {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap contributors'
+    }
+  }
+};
+
 const form = mustQuery<HTMLFormElement>('#upload-form');
 const fileInput = mustQuery<HTMLInputElement>('#gpx-file');
 const analyzeButton = mustQuery<HTMLButtonElement>('#analyze-button');
@@ -47,6 +66,7 @@ const fileSummary = mustQuery<HTMLParagraphElement>('#file-summary');
 const mapEmpty = mustQuery<HTMLDivElement>('#map-empty');
 const mapShell = mustQuery<HTMLDivElement>('.map-shell');
 const fullscreenButton = mustQuery<HTMLButtonElement>('#fullscreen-button');
+const mapStyleSelect = mustQuery<HTMLSelectElement>('#map-style');
 const elevationProfile = mustQuery<HTMLDivElement>('#elevation-profile');
 const waterTable = mustQuery<HTMLTableSectionElement>('#water-table');
 const filterButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-distance]'));
@@ -56,6 +76,7 @@ let selectedDistance = 200;
 let selectedWaterPointId: number | null = null;
 let routeLayer: L.Polyline | null = null;
 let markerLayer = L.layerGroup();
+let currentTileLayer = createTileLayer('opentopo');
 
 const map = L.map('map', {
   scrollWheelZoom: true,
@@ -64,12 +85,13 @@ const map = L.map('map', {
 
 L.control.zoom({ position: 'topright' }).addTo(map);
 
-L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-  maxZoom: 17,
-  attribution: '© OpenStreetMap contributors © OpenTopoMap'
-}).addTo(map);
+currentTileLayer.addTo(map);
 
 markerLayer.addTo(map);
+
+mapStyleSelect.addEventListener('change', () => {
+  setMapStyle(mapStyleSelect.value as MapStyle);
+});
 
 fullscreenButton.addEventListener('click', () => {
   void toggleFullscreen();
@@ -452,6 +474,21 @@ function waterIcon(selected: boolean): L.DivIcon {
     iconAnchor: [15, 39],
     popupAnchor: [0, -36]
   });
+}
+
+function createTileLayer(style: MapStyle): L.TileLayer {
+  const layer = tileLayers[style];
+  return L.tileLayer(layer.url, layer.options);
+}
+
+function setMapStyle(style: MapStyle): void {
+  if (!tileLayers[style]) {
+    return;
+  }
+
+  currentTileLayer.removeFrom(map);
+  currentTileLayer = createTileLayer(style);
+  currentTileLayer.addTo(map);
 }
 
 async function toggleFullscreen(): Promise<void> {
