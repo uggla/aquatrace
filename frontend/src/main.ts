@@ -113,6 +113,10 @@ form.addEventListener('submit', (event) => {
   void analyzeFile(file, 'upload');
 });
 
+fileInput.addEventListener('change', () => {
+  analyzeButton.disabled = !fileInput.files?.[0];
+});
+
 exampleButton.addEventListener('click', () => {
   void analyzeExample();
 });
@@ -464,7 +468,7 @@ function updateFilterButtons(): void {
 }
 
 function setLoading(loading: boolean, source?: 'upload' | 'example'): void {
-  analyzeButton.disabled = loading;
+  analyzeButton.disabled = loading || !fileInput.files?.[0];
   exampleButton.disabled = loading;
   analyzeButton.textContent = loading && source === 'upload' ? 'Analyzing...' : 'Analyze route';
   exampleButton.textContent = loading && source === 'example' ? 'Analyzing example...' : 'Try an example';

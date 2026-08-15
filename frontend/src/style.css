@@ -89,9 +89,14 @@ body {
   margin: 0;
 }
 
+.upload-form {
+  display: grid;
+  gap: 10px;
+}
+
 .upload-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(240px, 1fr) 240px;
   gap: 12px;
   align-items: center;
 }
@@ -102,14 +107,46 @@ body {
   margin: 0;
 }
 
-.upload-actions {
-  display: flex;
-  gap: 8px;
+#gpx-file,
+#analyze-button {
+  height: 64px;
+}
+
+#analyze-button {
+  width: 240px;
+}
+
+#gpx-file {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+#gpx-file::file-selector-button {
+  width: 240px;
+  height: 64px;
+  margin-right: 12px;
+  padding: 0 16px;
+  border: 1px solid var(--aquatrace-blue);
+  border-radius: var(--pico-border-radius);
+  background: var(--aquatrace-blue);
+  color: white;
+  cursor: pointer;
+  font: inherit;
+}
+
+#gpx-file:hover::file-selector-button,
+#gpx-file:focus-visible::file-selector-button {
+  border-color: var(--aquatrace-blue-dark);
+  background: var(--aquatrace-blue-dark);
 }
 
 #example-button {
+  width: auto;
   min-width: 240px;
-  flex-shrink: 0;
+  justify-self: start;
+  margin: 0;
   white-space: nowrap;
 }
 
@@ -766,10 +803,6 @@ body {
   .upload-row,
   .metrics {
     grid-template-columns: 1fr;
-  }
-
-  .upload-actions {
-    flex-direction: column;
   }
 
   #example-button {

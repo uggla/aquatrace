@@ -101,11 +101,9 @@
           <label for="gpx-file">Upload GPX</label>
           <div class="upload-row">
             <input id="gpx-file" name="file" type="file" accept=".gpx,application/gpx+xml" />
-            <div class="upload-actions">
-              <button id="analyze-button" type="submit">Analyze route</button>
-              <button id="example-button" class="secondary" type="button">Try an example</button>
-            </div>
+            <button id="analyze-button" type="submit" disabled>Analyze route</button>
           </div>
+          <button id="example-button" type="button">Try an example</button>
         </form>
 
         <p class="coverage-notice">
