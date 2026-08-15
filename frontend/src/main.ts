@@ -54,6 +54,7 @@ const tileLayers: Record<MapStyle, { url: string; options: L.TileLayerOptions }>
 const form = mustQuery<HTMLFormElement>('#upload-form');
 const fileInput = mustQuery<HTMLInputElement>('#gpx-file');
 const analyzeButton = mustQuery<HTMLButtonElement>('#analyze-button');
+const exampleButton = mustQuery<HTMLButtonElement>('#example-button');
 const statusLine = mustQuery<HTMLElement>('#status-line');
 const statusMessage = mustQuery<HTMLParagraphElement>('#status-message');
 const distanceMetric = mustQuery<HTMLSpanElement>('#distance-metric');
@@ -104,7 +105,16 @@ document.addEventListener('fullscreenchange', () => {
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();
-  void analyzeRoute();
+  const file = fileInput.files?.[0];
+  if (!file) {
+    setStatus('Choose a GPX file first.', 'error');
+    return;
+  }
+  void analyzeFile(file, 'upload');
+});
+
+exampleButton.addEventListener('click', () => {
+  void analyzeExample();
 });
 
 for (const button of filterButtons) {
@@ -115,13 +125,7 @@ for (const button of filterButtons) {
   });
 }
 
-async function analyzeRoute(): Promise<void> {
-  const file = fileInput.files?.[0];
-  if (!file) {
-    setStatus('Choose a GPX file first.', 'error');
-    return;
-  }
-
+async function analyzeFile(file: File, source: 'upload' | 'example'): Promise<void> {
   if (!file.name.toLowerCase().endsWith('.gpx')) {
     setStatus('Only GPX files are accepted.', 'error');
     return;
@@ -130,7 +134,7 @@ async function analyzeRoute(): Promise<void> {
   const formData = new FormData();
   formData.append('file', file);
 
-  setLoading(true);
+  setLoading(true, source);
   fileSummary.textContent = `${file.name} - ${formatFileSize(file.size)}`;
   setStatus('Analyzing route with local OpenStreetMap data...', 'neutral');
 
@@ -152,6 +156,29 @@ async function analyzeRoute(): Promise<void> {
   } catch (error) {
     console.error(error);
     setStatus(error instanceof Error ? readableError(error.message) : 'The route could not be analyzed.', 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function analyzeExample(): Promise<void> {
+  setLoading(true, 'example');
+  setStatus('Loading example route...', 'neutral');
+
+  try {
+    const response = await fetch('/examples/Etape_du_tour_2026.gpx');
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const contents = await response.blob();
+    const file = new File([contents], 'Etape_du_tour_2026.gpx', {
+      type: 'application/gpx+xml'
+    });
+    await analyzeFile(file, 'example');
+  } catch (error) {
+    console.error(error);
+    setStatus('The example route could not be loaded.', 'error');
   } finally {
     setLoading(false);
   }
@@ -436,9 +463,11 @@ function updateFilterButtons(): void {
   distanceLabel.textContent = `${selectedDistance} m`;
 }
 
-function setLoading(loading: boolean): void {
+function setLoading(loading: boolean, source?: 'upload' | 'example'): void {
   analyzeButton.disabled = loading;
-  analyzeButton.textContent = loading ? 'Analyzing...' : 'Analyze route';
+  exampleButton.disabled = loading;
+  analyzeButton.textContent = loading && source === 'upload' ? 'Analyzing...' : 'Analyze route';
+  exampleButton.textContent = loading && source === 'example' ? 'Analyzing example...' : 'Try an example';
   document.body.classList.toggle('is-loading', loading);
 }
 

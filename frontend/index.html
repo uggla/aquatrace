@@ -101,9 +101,17 @@
           <label for="gpx-file">Upload GPX</label>
           <div class="upload-row">
             <input id="gpx-file" name="file" type="file" accept=".gpx,application/gpx+xml" />
-            <button id="analyze-button" type="submit">Analyze route</button>
+            <div class="upload-actions">
+              <button id="analyze-button" type="submit">Analyze route</button>
+              <button id="example-button" class="secondary" type="button">Try an example</button>
+            </div>
           </div>
         </form>
+
+        <p class="coverage-notice">
+          Drinking-water data is currently available for Europe only. Need coverage elsewhere?
+          <a href="https://github.com/uggla/aquatrace/issues/new">Open an issue on GitHub</a>.
+        </p>
 
         <fieldset class="distance-filter">
           <legend>Maximum distance <span id="distance-label">200 m</span></legend>
@@ -207,13 +215,23 @@
 
       <footer class="app-footer">
         <div class="made-with">
-          <span>AquaTrace v0.3.0</span>
+          <span>AquaTrace v0.4.0</span>
           <span class="footer-separator" aria-hidden="true"></span>
-          <span>Made with ❤️ with Vite</span>
+          <span>Made by <a href="mailto:uggla@free.fr">Uggla</a> with ❤️ using Vite</span>
           <img src="/vite.svg" class="logo small inline" alt="Vite" />
           <span>+ TypeScript</span>
           <img src="/typescript.svg" class="logo small inline" alt="TS" />
+          <span>+ Rust</span>
+          <img src="/rust.png" class="logo small inline" alt="Rust" />
         </div>
+        <a class="github-link" href="https://github.com/uggla/aquatrace">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.49c-2.23.49-2.7-1.08-2.7-1.08-.37-.93-.9-1.18-.9-1.18-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.65-.89-3.65-3.96 0-.88.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.22 2.2.82A7.68 7.68 0 0 1 8 3.72a7.68 7.68 0 0 1 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.08-1.87 3.75-3.66 3.95.29.25.55.74.55 1.5v2.22c0 .21.14.46.55.38A8 8 0 0 0 8 0Z"
+            />
+          </svg>
+          GitHub
+        </a>
       </footer>
     </main>
 

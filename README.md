@@ -99,3 +99,6 @@ The map displays:
 ```text
 © OpenStreetMap contributors © OpenTopoMap
 ```
+
+The Rust logo is owned by the Rust Foundation and used under the
+[Creative Commons Attribution license](https://creativecommons.org/licenses/by/4.0/).
