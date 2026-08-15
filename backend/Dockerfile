@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG RUST_VERSION=1.94.1
+ARG RUST_VERSION=1.97.1
 FROM docker.io/rust:${RUST_VERSION}-slim-trixie AS build
 
 WORKDIR /app
