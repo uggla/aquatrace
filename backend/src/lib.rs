@@ -25,6 +25,7 @@ use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
 pub mod geometry;
+mod gpx_archive;
 pub mod gpx_parser;
 pub mod hash;
 pub mod osm_import;
@@ -32,12 +33,16 @@ pub mod store;
 pub mod types;
 
 use geometry::project_water_points;
+use gpx_archive::{ArchiveCategory, GpxArchive, safe_filename, submission_id};
 use gpx_parser::parse_gpx_route;
 use hash::sha256_hex;
 use types::{AnalyzeResponse, BBox};
 
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_ANALYSIS_DISTANCE_M: f64 = 500.0;
+const DEFAULT_GPX_LOG_DIR: &str = "data/log";
+const DEFAULT_GPX_LOG_RETENTION_DAYS: i64 = 90;
+const DEFAULT_GPX_LOG_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const DEFAULT_OSM_PBF_URL: &str = "https://download.geofabrik.de/europe-latest.osm.pbf";
 const DEFAULT_OSM_IMPORT_INTERVAL_SECONDS: i64 = 1_296_000;
 const DEFAULT_OSM_IMPORT_DIR: &str = "data/osm";
@@ -46,6 +51,7 @@ const DEFAULT_OSM_IMPORT_DIR: &str = "data/osm";
 pub struct AppState {
     pool: SqlitePool,
     config: Arc<Config>,
+    gpx_archive: GpxArchive,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +60,9 @@ pub struct Config {
     pub database_url: String,
     pub max_upload_bytes: usize,
     pub max_analysis_distance_m: f64,
+    pub gpx_log_dir: PathBuf,
+    pub gpx_log_retention: Duration,
+    pub gpx_log_max_bytes: u64,
     pub osm_pbf_url: String,
     pub osm_import_interval: Duration,
     pub osm_import_dir: PathBuf,
@@ -100,12 +109,11 @@ pub fn ensure_sqlite_parent_exists(database_url: &str) -> Result<()> {
     }
 
     let path = path.trim_start_matches("//");
-    if let Some(parent) = Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create database directory {}", parent.display())
-            })?;
-        }
+    if let Some(parent) = Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create database directory {}", parent.display()))?;
     }
 
     Ok(())
@@ -119,9 +127,23 @@ pub async fn app_state(config: Config) -> Result<AppState> {
         osm_import::ensure_initial_data(&pool, &config).await?;
     }
 
+    let archive_retention = config
+        .gpx_log_retention
+        .to_std()
+        .context("GPX_LOG_RETENTION_DAYS must be positive")?;
+    let gpx_archive = GpxArchive::new(
+        config.gpx_log_dir.clone(),
+        archive_retention,
+        config.gpx_log_max_bytes,
+    );
+    if let Err(error) = gpx_archive.prepare().await {
+        warn!(error = %error, "failed to prepare GPX archive; uploads will continue");
+    }
+
     let state = AppState {
         pool,
         config: Arc::new(config),
+        gpx_archive,
     };
     osm_import::spawn_import_scheduler(state.pool.clone(), Arc::clone(&state.config));
 
@@ -136,16 +158,91 @@ async fn analyze(
     State(state): State<AppState>,
     multipart: Multipart,
 ) -> ApiResult<Json<AnalyzeResponse>> {
-    let file = read_gpx_upload(multipart, state.config.max_upload_bytes).await?;
-    let gpx_hash = sha256_hex(&file);
+    let request_start = Instant::now();
+    let upload = match read_gpx_upload(multipart, state.config.max_upload_bytes).await {
+        Ok(upload) => upload,
+        Err(error) => {
+            warn!(
+                error_code = error.code,
+                elapsed_ms = request_start.elapsed().as_millis(),
+                "GPX submission rejected before archival"
+            );
+            return Err(error);
+        }
+    };
+    let gpx_hash = sha256_hex(&upload.bytes);
+    let submission_id = submission_id(&gpx_hash);
+    let filename = safe_filename(&upload.filename);
+    info!(
+        submission_id,
+        filename,
+        upload_bytes = upload.bytes.len(),
+        gpx_hash,
+        "received GPX submission"
+    );
+
+    let result = analyze_uploaded_gpx(&state, &upload.bytes, &gpx_hash).await;
+    let (category, outcome, error_code, cache_hit) = match &result {
+        Ok(success) => (
+            ArchiveCategory::Valid,
+            "valid",
+            None,
+            Some(success.cache_hit),
+        ),
+        Err(error) => (ArchiveCategory::Error, "error", Some(error.code), None),
+    };
+    match state
+        .gpx_archive
+        .archive(&submission_id, &upload.filename, &upload.bytes, category)
+        .await
+    {
+        Ok(record) => info!(
+            submission_id,
+            archive_category = category.as_str(),
+            archive_path = %record.path.display(),
+            compressed_bytes = record.compressed_bytes,
+            "archived GPX submission"
+        ),
+        Err(error) => warn!(
+            submission_id,
+            archive_category = category.as_str(),
+            error = %error,
+            "failed to archive GPX submission; preserving API response"
+        ),
+    }
+    info!(
+        submission_id,
+        outcome,
+        error_code,
+        cache_hit,
+        elapsed_ms = request_start.elapsed().as_millis(),
+        "completed GPX submission"
+    );
+
+    result.map(|success| Json(success.analysis))
+}
+
+struct AnalysisSuccess {
+    analysis: AnalyzeResponse,
+    cache_hit: bool,
+}
+
+async fn analyze_uploaded_gpx(
+    state: &AppState,
+    file: &[u8],
+    gpx_hash: &str,
+) -> ApiResult<AnalysisSuccess> {
     let now = Utc::now();
 
-    if let Some(cached) = store::get_route_cache(&state.pool, &gpx_hash, now).await? {
-        return Ok(Json(cached));
+    if let Some(cached) = store::get_route_cache(&state.pool, gpx_hash, now).await? {
+        return Ok(AnalysisSuccess {
+            analysis: cached,
+            cache_hit: true,
+        });
     }
 
     let parse_start = Instant::now();
-    let route = parse_gpx_route(&file).map_err(ApiError::bad_request)?;
+    let route = parse_gpx_route(file).map_err(ApiError::bad_request)?;
     info!(
         points = route.points.len(),
         elapsed_ms = parse_start.elapsed().as_millis(),
@@ -181,7 +278,7 @@ async fn analyze(
     let cache_start = Instant::now();
     store::put_route_cache(
         &state.pool,
-        &gpx_hash,
+        gpx_hash,
         &analysis,
         now,
         state.config.route_cache_ttl,
@@ -192,10 +289,21 @@ async fn analyze(
         "wrote route analysis cache"
     );
 
-    Ok(Json(analysis))
+    Ok(AnalysisSuccess {
+        analysis,
+        cache_hit: false,
+    })
 }
 
-async fn read_gpx_upload(mut multipart: Multipart, max_upload_bytes: usize) -> ApiResult<Bytes> {
+struct GpxUpload {
+    filename: String,
+    bytes: Bytes,
+}
+
+async fn read_gpx_upload(
+    mut multipart: Multipart,
+    max_upload_bytes: usize,
+) -> ApiResult<GpxUpload> {
     while let Some(field) = multipart
         .next_field()
         .await
@@ -205,8 +313,8 @@ async fn read_gpx_upload(mut multipart: Multipart, max_upload_bytes: usize) -> A
             continue;
         }
 
-        let filename = field.file_name().unwrap_or_default().to_ascii_lowercase();
-        if !filename.ends_with(".gpx") {
+        let filename = field.file_name().unwrap_or_default().to_owned();
+        if !filename.to_ascii_lowercase().ends_with(".gpx") {
             return Err(ApiError::bad_request(anyhow::anyhow!(
                 "uploaded file must have a .gpx extension"
             )));
@@ -216,13 +324,7 @@ async fn read_gpx_upload(mut multipart: Multipart, max_upload_bytes: usize) -> A
         if bytes.len() > max_upload_bytes {
             return Err(ApiError::payload_too_large());
         }
-        if bytes.is_empty() {
-            return Err(ApiError::bad_request(anyhow::anyhow!(
-                "uploaded file is empty"
-            )));
-        }
-
-        return Ok(bytes);
+        return Ok(GpxUpload { filename, bytes });
     }
 
     Err(ApiError::bad_request(anyhow::anyhow!(
@@ -243,6 +345,15 @@ impl Config {
         let osm_import_dir = std::env::var("OSM_IMPORT_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_OSM_IMPORT_DIR));
+        let gpx_log_retention_days =
+            parse_i64_env("GPX_LOG_RETENTION_DAYS", DEFAULT_GPX_LOG_RETENTION_DAYS)?;
+        if gpx_log_retention_days <= 0 {
+            anyhow::bail!("GPX_LOG_RETENTION_DAYS must be a positive integer");
+        }
+        let gpx_log_max_bytes = parse_u64_env("GPX_LOG_MAX_BYTES", DEFAULT_GPX_LOG_MAX_BYTES)?;
+        if gpx_log_max_bytes == 0 {
+            anyhow::bail!("GPX_LOG_MAX_BYTES must be a positive integer");
+        }
 
         Ok(Self {
             bind_addr,
@@ -252,6 +363,11 @@ impl Config {
                 "MAX_ANALYSIS_DISTANCE_M",
                 DEFAULT_MAX_ANALYSIS_DISTANCE_M,
             )?,
+            gpx_log_dir: std::env::var("GPX_LOG_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(DEFAULT_GPX_LOG_DIR)),
+            gpx_log_retention: Duration::days(gpx_log_retention_days),
+            gpx_log_max_bytes,
             osm_pbf_url,
             osm_import_interval: Duration::seconds(parse_i64_env(
                 "OSM_IMPORT_INTERVAL_SECONDS",
@@ -280,6 +396,15 @@ fn parse_usize_env(name: &str, default: usize) -> Result<usize> {
     std::env::var(name)
         .ok()
         .map(|value| value.parse::<usize>())
+        .transpose()
+        .with_context(|| format!("{name} must be a positive integer"))
+        .map(|value| value.unwrap_or(default))
+}
+
+fn parse_u64_env(name: &str, default: u64) -> Result<u64> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.parse::<u64>())
         .transpose()
         .with_context(|| format!("{name} must be a positive integer"))
         .map(|value| value.unwrap_or(default))
@@ -360,10 +485,13 @@ struct ErrorResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, io::Read, path::PathBuf};
+
     use axum::{
         body::{Body, to_bytes},
         http::{Method, Request, StatusCode, header},
     };
+    use flate2::read::GzDecoder;
     use serde_json::Value;
     use tempfile::TempDir;
     use tower::ServiceExt;
@@ -387,6 +515,9 @@ mod tests {
             database_url,
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
             max_analysis_distance_m: DEFAULT_MAX_ANALYSIS_DISTANCE_M,
+            gpx_log_dir: temp.path().join("log"),
+            gpx_log_retention: Duration::days(DEFAULT_GPX_LOG_RETENTION_DAYS),
+            gpx_log_max_bytes: DEFAULT_GPX_LOG_MAX_BYTES,
             osm_pbf_url: DEFAULT_OSM_PBF_URL.to_owned(),
             osm_import_interval: Duration::days(15),
             osm_import_dir: temp.path().join("osm"),
@@ -422,9 +553,24 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    fn archive_files(temp: &TempDir, category: &str) -> Vec<PathBuf> {
+        fs::read_dir(temp.path().join("log").join(category))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "gz"))
+            .collect()
+    }
+
+    fn decompress(path: &Path) -> Vec<u8> {
+        let mut decoder = GzDecoder::new(fs::File::open(path).unwrap());
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        decoded
+    }
+
     #[tokio::test]
     async fn analyze_route_success_and_persists_cache() {
-        let (app, _temp) = test_app(vec![OsmWaterPoint {
+        let (app, temp) = test_app(vec![OsmWaterPoint {
             osm_id: 123,
             lat: 45.005,
             lon: 5.001,
@@ -438,21 +584,51 @@ mod tests {
         assert!(json["route"]["distance_m"].as_f64().unwrap() > 1000.0);
         assert_eq!(json["water_points"][0]["osm_id"], 123);
         assert_eq!(json["water_points"][0]["name"], "Village Fountain");
+        let files = archive_files(&temp, "valid");
+        assert_eq!(files.len(), 1);
+        assert_eq!(decompress(&files[0]), GPX.as_bytes());
+        assert!(archive_files(&temp, "error").is_empty());
     }
 
     #[tokio::test]
     async fn route_cache_hit_uses_cached_analysis() {
-        let (app, _temp) = test_app(vec![]).await;
+        let (app, temp) = test_app(vec![]).await;
         let first = app.clone().oneshot(multipart_request(GPX)).await.unwrap();
         assert_eq!(first.status(), StatusCode::OK);
         let second = app.oneshot(multipart_request(GPX)).await.unwrap();
         assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(archive_files(&temp, "valid").len(), 2);
     }
 
     #[tokio::test]
     async fn invalid_gpx_is_rejected() {
-        let (app, _temp) = test_app(vec![]).await;
+        let (app, temp) = test_app(vec![]).await;
         let response = app.oneshot(multipart_request("not gpx")).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let files = archive_files(&temp, "error");
+        assert_eq!(files.len(), 1);
+        assert_eq!(decompress(&files[0]), b"not gpx");
+        assert!(archive_files(&temp, "valid").is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_gpx_is_rejected_and_archived() {
+        let (app, temp) = test_app(vec![]).await;
+        let response = app.oneshot(multipart_request("")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let files = archive_files(&temp, "error");
+        assert_eq!(files.len(), 1);
+        assert!(decompress(&files[0]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn archive_failure_does_not_change_successful_response() {
+        let (app, temp) = test_app(vec![]).await;
+        let log_dir = temp.path().join("log");
+        fs::remove_dir_all(&log_dir).unwrap();
+        fs::write(&log_dir, "archive unavailable").unwrap();
+
+        let response = app.oneshot(multipart_request(GPX)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

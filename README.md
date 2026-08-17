@@ -59,6 +59,9 @@ DATABASE_URL=sqlite:/data/aquatrace.db
 BIND_ADDR=0.0.0.0:3000
 MAX_UPLOAD_BYTES=10485760
 MAX_ANALYSIS_DISTANCE_M=500
+GPX_LOG_DIR=data/log
+GPX_LOG_RETENTION_DAYS=90
+GPX_LOG_MAX_BYTES=1073741824
 OSM_PBF_URL=https://download.geofabrik.de/europe-latest.osm.pbf
 OSM_IMPORT_INTERVAL_SECONDS=1296000
 OSM_IMPORT_DIR=data/osm
@@ -68,6 +71,13 @@ ROUTE_CACHE_TTL_SECONDS=86400
 
 The Europe PBF extract is large. Keep enough free disk space in the import directory for the
 download and SQLite import workspace. Docker/Compose overrides `OSM_IMPORT_DIR` to `/data/osm`.
+
+Completed GPX submissions are compressed as `.gpx.gz` files under `GPX_LOG_DIR/valid` or
+`GPX_LOG_DIR/error`. The backend removes files older than `GPX_LOG_RETENTION_DAYS`, then removes
+the oldest remaining files as needed to keep both directories under `GPX_LOG_MAX_BYTES` in total.
+Archiving is best effort and never changes the API response. These files contain user location data;
+restrict access to the archive directory and choose retention settings appropriate for your privacy
+requirements. Docker/Compose stores the archive under the existing `/data` volume.
 
 ## API
 
