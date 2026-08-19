@@ -48,9 +48,16 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:3000`.
 
-The first backend startup downloads and imports the Europe OSM extract before serving requests.
-In local development, the default import directory is `data/osm`. For local UI work without the
-import, start the backend with `OSM_IMPORT_ON_STARTUP=false`.
+The backend only starts serving requests once both the Europe PBF extract and an imported SQLite
+dataset are available. Missing data is downloaded and imported synchronously. When an existing
+dataset is usable but stale, the backend starts immediately and refreshes it in the background.
+In local development, the default import directory is `data/osm`.
+
+To download and import a fresh extract regardless of its age, use:
+
+```bash
+cargo run -- --force-osm-download
+```
 
 ## Backend Configuration
 
@@ -71,6 +78,9 @@ ROUTE_CACHE_TTL_SECONDS=86400
 
 The Europe PBF extract is large. Keep enough free disk space in the import directory for the
 download and SQLite import workspace. Docker/Compose overrides `OSM_IMPORT_DIR` to `/data/osm`.
+`OSM_IMPORT_ON_STARTUP=false` skips an optional refresh when both the local PBF and SQLite dataset
+are already usable; it never permits the API to start with either one missing. Download, PBF parsing,
+and SQLite replacement progress is logged every five seconds during an import.
 
 Completed GPX submissions are compressed as `.gpx.gz` files under `GPX_LOG_DIR/valid` or
 `GPX_LOG_DIR/error`. The backend removes files older than `GPX_LOG_RETENTION_DAYS`, then removes

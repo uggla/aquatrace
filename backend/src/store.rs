@@ -201,6 +201,24 @@ pub async fn replace_water_points(
     points: &[OsmWaterPoint],
     now: DateTime<Utc>,
 ) -> Result<()> {
+    replace_water_points_inner(pool, points, now, None).await
+}
+
+pub(crate) async fn replace_water_points_for_import(
+    pool: &SqlitePool,
+    points: &[OsmWaterPoint],
+    now: DateTime<Utc>,
+    import_id: i64,
+) -> Result<()> {
+    replace_water_points_inner(pool, points, now, Some(import_id)).await
+}
+
+async fn replace_water_points_inner(
+    pool: &SqlitePool,
+    points: &[OsmWaterPoint],
+    now: DateTime<Utc>,
+    progress_import_id: Option<i64>,
+) -> Result<()> {
     let refreshed_at = now.to_rfc3339();
     let mut tx = pool
         .begin()
@@ -225,7 +243,9 @@ pub async fn replace_water_points(
     .await
     .context("failed to create import table")?;
 
-    for point in points {
+    let write_started_at = std::time::Instant::now();
+    let mut last_progress_log = std::time::Instant::now();
+    for (index, point) in points.iter().enumerate() {
         sqlx::query(
             "INSERT INTO water_points_next (osm_id, lat, lon, name, last_refresh)
              VALUES (?1, ?2, ?3, ?4, ?5)
@@ -243,6 +263,23 @@ pub async fn replace_water_points(
         .execute(&mut *tx)
         .await
         .context("failed to insert imported water point")?;
+
+        if let Some(import_id) = progress_import_id
+            && last_progress_log.elapsed() >= std::time::Duration::from_secs(5)
+        {
+            let inserted_points = index + 1;
+            let percent = inserted_points as f64 * 100.0 / points.len() as f64;
+            tracing::info!(
+                import_id,
+                phase = "writing_sqlite",
+                inserted_points,
+                total_points = points.len(),
+                percent = format_args!("{percent:.1}"),
+                elapsed_seconds = write_started_at.elapsed().as_secs(),
+                "OSM import in progress"
+            );
+            last_progress_log = std::time::Instant::now();
+        }
     }
 
     sqlx::query("DROP TABLE water_points")
@@ -260,6 +297,17 @@ pub async fn replace_water_points(
     tx.commit()
         .await
         .context("failed to commit OSM import update")?;
+    if let Some(import_id) = progress_import_id {
+        tracing::info!(
+            import_id,
+            phase = "writing_sqlite",
+            inserted_points = points.len(),
+            total_points = points.len(),
+            percent = "100.0",
+            elapsed_seconds = write_started_at.elapsed().as_secs(),
+            "finished writing OSM water points to SQLite"
+        );
+    }
     Ok(())
 }
 

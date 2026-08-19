@@ -1,12 +1,13 @@
 [package]
 name = "aquatrace-backend"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["multipart"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4.6.6", features = ["derive"] }
 flate2 = "1.1.9"
 gpx = "0.10.0"
 osmpbf = "0.3.8"

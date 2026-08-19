@@ -70,6 +70,11 @@ pub struct Config {
     pub route_cache_ttl: Duration,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StartupOptions {
+    pub force_osm_download: bool,
+}
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -120,12 +125,15 @@ pub fn ensure_sqlite_parent_exists(database_url: &str) -> Result<()> {
 }
 
 pub async fn app_state(config: Config) -> Result<AppState> {
+    app_state_with_options(config, StartupOptions::default()).await
+}
+
+pub async fn app_state_with_options(config: Config, options: StartupOptions) -> Result<AppState> {
     ensure_sqlite_parent_exists(&config.database_url)?;
     let pool = connect_database(&config.database_url).await?;
 
-    if config.osm_import_on_startup {
-        osm_import::ensure_initial_data(&pool, &config).await?;
-    }
+    let refresh_on_start =
+        osm_import::prepare_initial_data(&pool, &config, options.force_osm_download).await?;
 
     let archive_retention = config
         .gpx_log_retention
@@ -145,7 +153,11 @@ pub async fn app_state(config: Config) -> Result<AppState> {
         config: Arc::new(config),
         gpx_archive,
     };
-    osm_import::spawn_import_scheduler(state.pool.clone(), Arc::clone(&state.config));
+    osm_import::spawn_import_scheduler(
+        state.pool.clone(),
+        Arc::clone(&state.config),
+        refresh_on_start,
+    );
 
     Ok(state)
 }
@@ -524,10 +536,21 @@ mod tests {
             osm_import_on_startup: false,
             route_cache_ttl: Duration::days(1),
         };
-        let state = app_state(config).await.unwrap();
-        store::replace_water_points(&state.pool, &points, Utc::now())
+        let pool = connect_database(&config.database_url).await.unwrap();
+        store::replace_water_points(&pool, &points, Utc::now())
             .await
             .unwrap();
+        let gpx_archive = GpxArchive::new(
+            config.gpx_log_dir.clone(),
+            config.gpx_log_retention.to_std().unwrap(),
+            config.gpx_log_max_bytes,
+        );
+        gpx_archive.prepare().await.unwrap();
+        let state = AppState {
+            pool,
+            config: Arc::new(config),
+            gpx_archive,
+        };
         (build_router(state), temp)
     }
 

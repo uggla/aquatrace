@@ -1,7 +1,16 @@
 use anyhow::{Context, Result};
-use aquatrace_backend::{Config, app_state, build_router};
+use aquatrace_backend::{Config, StartupOptions, app_state_with_options, build_router};
+use clap::Parser;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Analyze GPX routes and locate nearby drinking water")]
+struct Cli {
+    /// Download and import a fresh OpenStreetMap PBF extract on startup
+    #[arg(long)]
+    force_osm_download: bool,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -13,9 +22,16 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    let cli = Cli::parse();
     let config = Config::from_env()?;
     let bind_addr = config.bind_addr;
-    let state = app_state(config).await?;
+    let state = app_state_with_options(
+        config,
+        StartupOptions {
+            force_osm_download: cli.force_osm_download,
+        },
+    )
+    .await?;
     let app = build_router(state);
 
     info!("backend listening on {}", bind_addr);
