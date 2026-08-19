@@ -1,13 +1,14 @@
 use std::io::Cursor;
 
 use anyhow::{Context, Result, anyhow};
+use gpx::errors::GpxError;
 
 use crate::types::{RoutePoint, RouteSummary};
 
 const ELEVATION_DEADBAND_M: f64 = 10.0;
 
 pub fn parse_gpx_route(bytes: &[u8]) -> Result<RouteSummary> {
-    let gpx = gpx::read(Cursor::new(bytes)).context("invalid GPX document")?;
+    let gpx = read_gpx_tolerating_empty_metadata(bytes).context("invalid GPX document")?;
     let mut points = Vec::new();
 
     for track in gpx.tracks {
@@ -28,6 +29,84 @@ pub fn parse_gpx_route(bytes: &[u8]) -> Result<RouteSummary> {
     }
 
     Ok(summarize_route(points))
+}
+
+fn read_gpx_tolerating_empty_metadata(bytes: &[u8]) -> Result<gpx::Gpx, GpxError> {
+    match gpx::read(Cursor::new(bytes)) {
+        Err(GpxError::NoStringContent) => {
+            let Some(normalized) = remove_empty_license_elements(bytes) else {
+                return Err(GpxError::NoStringContent);
+            };
+            gpx::read(Cursor::new(normalized))
+        }
+        result => result,
+    }
+}
+
+fn remove_empty_license_elements(bytes: &[u8]) -> Option<Vec<u8>> {
+    const OPENING_TAG: &[u8] = b"<license";
+    const CLOSING_TAG: &[u8] = b"</license>";
+
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut copy_from = 0;
+    let mut search_from = 0;
+    let mut changed = false;
+
+    while let Some(relative_start) = find_bytes(&bytes[search_from..], OPENING_TAG) {
+        let start = search_from + relative_start;
+        let boundary = bytes.get(start + OPENING_TAG.len()).copied();
+        if !boundary.is_some_and(|byte| byte == b'>' || byte == b'/' || byte.is_ascii_whitespace())
+        {
+            search_from = start + OPENING_TAG.len();
+            continue;
+        }
+
+        let Some(relative_tag_end) = bytes[start..].iter().position(|byte| *byte == b'>') else {
+            break;
+        };
+        let tag_end = start + relative_tag_end;
+        let opening_content = &bytes[start + 1..tag_end];
+        let self_closing = opening_content
+            .iter()
+            .rev()
+            .find(|byte| !byte.is_ascii_whitespace())
+            .is_some_and(|byte| *byte == b'/');
+
+        let remove_end = if self_closing {
+            Some(tag_end + 1)
+        } else {
+            let content_start = tag_end + 1;
+            find_bytes(&bytes[content_start..], CLOSING_TAG).and_then(|relative_close| {
+                let close_start = content_start + relative_close;
+                bytes[content_start..close_start]
+                    .iter()
+                    .all(|byte| byte.is_ascii_whitespace())
+                    .then_some(close_start + CLOSING_TAG.len())
+            })
+        };
+
+        if let Some(remove_end) = remove_end {
+            output.extend_from_slice(&bytes[copy_from..start]);
+            copy_from = remove_end;
+            search_from = remove_end;
+            changed = true;
+        } else {
+            search_from = tag_end + 1;
+        }
+    }
+
+    if !changed {
+        return None;
+    }
+
+    output.extend_from_slice(&bytes[copy_from..]);
+    Some(output)
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 pub fn summarize_route(points: Vec<RoutePoint>) -> RouteSummary {
@@ -245,6 +324,33 @@ mod tests {
         assert!(summary.elevation_gain_m < 2_244.0);
         assert!(summary.elevation_loss_m > 1_995.0);
         assert!(summary.elevation_loss_m < 2_245.0);
+    }
+
+    #[test]
+    fn accepts_compegps_trace_with_empty_license_metadata() {
+        let fixture = include_bytes!("../tests/fixtures/compegps_empty_license_anonymized.gpx");
+        assert!(matches!(
+            gpx::read(Cursor::new(fixture)),
+            Err(GpxError::NoStringContent)
+        ));
+
+        let summary = parse_gpx_route(fixture).expect("anonymized CompeGPS trace should parse");
+
+        assert_eq!(summary.points.len(), 947);
+    }
+
+    #[test]
+    fn removes_only_empty_license_elements() {
+        assert_eq!(
+            remove_empty_license_elements(b"<metadata><license /></metadata>").unwrap(),
+            b"<metadata></metadata>"
+        );
+        assert_eq!(
+            remove_empty_license_elements(b"<license>\r\n  </license>").unwrap(),
+            b""
+        );
+        assert!(remove_empty_license_elements(b"<license>MIT</license>").is_none());
+        assert!(remove_empty_license_elements(b"<licensee></licensee>").is_none());
     }
 
     #[test]
