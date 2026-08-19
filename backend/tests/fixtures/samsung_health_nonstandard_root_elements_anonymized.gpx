@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1" version="1.1" creator="Samsung Health_0.2" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd http://www.garmin.com/xmlschemas/TrackPointExtension/v1 http://www.garmin.com/xmlschemas/TrackPointExtensionv1.xsd">
+<metadate>2000-01-01T08:00:00Z</metadate>
+<trk>
+<name>Anonymized Samsung Health route</name>
+<trkseg>
+<trkpt lat="48.00000000" lon="2.00000000">
+<ele>300.0</ele>
+<time>2000-01-01T08:00:00Z</time>
+</trkpt>
+<trkpt lat="48.00100000" lon="2.00100000">
+<ele>305.0</ele>
+<time>2000-01-01T08:00:01Z</time>
+</trkpt>
+</trkseg>
+</trk>
+<exerciseinfo>
+<exercisetype>13004</exercisetype>
+<distance>100.0</distance>
+<elevationgain>5.0</elevationgain>
+<elevationloss>0.0</elevationloss>
+<avggradient>0.0</avggradient>
+<duration>1000</duration>
+<avgspeed>1.0</avgspeed>
+</exerciseinfo>
+</gpx>

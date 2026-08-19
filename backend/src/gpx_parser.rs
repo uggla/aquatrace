@@ -8,7 +8,7 @@ use crate::types::{RoutePoint, RouteSummary};
 const ELEVATION_DEADBAND_M: f64 = 10.0;
 
 pub fn parse_gpx_route(bytes: &[u8]) -> Result<RouteSummary> {
-    let gpx = read_gpx_tolerating_empty_metadata(bytes).context("invalid GPX document")?;
+    let gpx = read_gpx_tolerating_known_export_issues(bytes).context("invalid GPX document")?;
     let mut points = Vec::new();
 
     for track in gpx.tracks {
@@ -31,33 +31,65 @@ pub fn parse_gpx_route(bytes: &[u8]) -> Result<RouteSummary> {
     Ok(summarize_route(points))
 }
 
-fn read_gpx_tolerating_empty_metadata(bytes: &[u8]) -> Result<gpx::Gpx, GpxError> {
-    match gpx::read(Cursor::new(bytes)) {
-        Err(GpxError::NoStringContent) => {
-            let Some(normalized) = remove_empty_license_elements(bytes) else {
-                return Err(GpxError::NoStringContent);
-            };
-            gpx::read(Cursor::new(normalized))
+fn read_gpx_tolerating_known_export_issues(bytes: &[u8]) -> Result<gpx::Gpx, GpxError> {
+    let mut normalized = None;
+
+    loop {
+        let input = normalized.as_deref().unwrap_or(bytes);
+        match gpx::read(Cursor::new(input)) {
+            Err(GpxError::NoStringContent) => {
+                let Some(next) = remove_empty_license_elements(input) else {
+                    return Err(GpxError::NoStringContent);
+                };
+                normalized = Some(next);
+            }
+            Err(GpxError::InvalidChildElement(child, parent))
+                if parent == "gpx" && is_ignored_samsung_root_element(&child) =>
+            {
+                let Some(next) = remove_elements(input, child.as_bytes(), |_| true) else {
+                    return Err(GpxError::InvalidChildElement(child, parent));
+                };
+                normalized = Some(next);
+            }
+            result => return result,
         }
-        result => result,
     }
 }
 
 fn remove_empty_license_elements(bytes: &[u8]) -> Option<Vec<u8>> {
-    const OPENING_TAG: &[u8] = b"<license";
-    const CLOSING_TAG: &[u8] = b"</license>";
+    remove_elements(bytes, b"license", |content| {
+        content.iter().all(|byte| byte.is_ascii_whitespace())
+    })
+}
+
+fn is_ignored_samsung_root_element(element: &str) -> bool {
+    matches!(element, "metadate" | "exerciseinfo")
+}
+
+fn remove_elements(
+    bytes: &[u8],
+    element: &[u8],
+    should_remove: impl Fn(&[u8]) -> bool,
+) -> Option<Vec<u8>> {
+    let mut opening_tag = Vec::with_capacity(element.len() + 1);
+    opening_tag.push(b'<');
+    opening_tag.extend_from_slice(element);
+    let mut closing_tag = Vec::with_capacity(element.len() + 3);
+    closing_tag.extend_from_slice(b"</");
+    closing_tag.extend_from_slice(element);
+    closing_tag.push(b'>');
 
     let mut output = Vec::with_capacity(bytes.len());
     let mut copy_from = 0;
     let mut search_from = 0;
     let mut changed = false;
 
-    while let Some(relative_start) = find_bytes(&bytes[search_from..], OPENING_TAG) {
+    while let Some(relative_start) = find_bytes(&bytes[search_from..], &opening_tag) {
         let start = search_from + relative_start;
-        let boundary = bytes.get(start + OPENING_TAG.len()).copied();
+        let boundary = bytes.get(start + opening_tag.len()).copied();
         if !boundary.is_some_and(|byte| byte == b'>' || byte == b'/' || byte.is_ascii_whitespace())
         {
-            search_from = start + OPENING_TAG.len();
+            search_from = start + opening_tag.len();
             continue;
         }
 
@@ -72,20 +104,18 @@ fn remove_empty_license_elements(bytes: &[u8]) -> Option<Vec<u8>> {
             .find(|byte| !byte.is_ascii_whitespace())
             .is_some_and(|byte| *byte == b'/');
 
-        let remove_end = if self_closing {
-            Some(tag_end + 1)
+        let removal = if self_closing {
+            should_remove(&[]).then_some(tag_end + 1)
         } else {
             let content_start = tag_end + 1;
-            find_bytes(&bytes[content_start..], CLOSING_TAG).and_then(|relative_close| {
+            find_bytes(&bytes[content_start..], &closing_tag).and_then(|relative_close| {
                 let close_start = content_start + relative_close;
-                bytes[content_start..close_start]
-                    .iter()
-                    .all(|byte| byte.is_ascii_whitespace())
-                    .then_some(close_start + CLOSING_TAG.len())
+                should_remove(&bytes[content_start..close_start])
+                    .then_some(close_start + closing_tag.len())
             })
         };
 
-        if let Some(remove_end) = remove_end {
+        if let Some(remove_end) = removal {
             output.extend_from_slice(&bytes[copy_from..start]);
             copy_from = remove_end;
             search_from = remove_end;
@@ -351,6 +381,40 @@ mod tests {
         );
         assert!(remove_empty_license_elements(b"<license>MIT</license>").is_none());
         assert!(remove_empty_license_elements(b"<licensee></licensee>").is_none());
+    }
+
+    #[test]
+    fn accepts_samsung_health_nonstandard_root_elements() {
+        let fixture = include_bytes!(
+            "../tests/fixtures/samsung_health_nonstandard_root_elements_anonymized.gpx"
+        );
+        assert!(matches!(
+            gpx::read(Cursor::new(fixture)),
+            Err(GpxError::InvalidChildElement(child, "gpx")) if child == "metadate"
+        ));
+
+        let without_metadate = remove_elements(fixture, b"metadate", |_| true).unwrap();
+        assert!(matches!(
+            gpx::read(Cursor::new(without_metadate)),
+            Err(GpxError::InvalidChildElement(child, "gpx")) if child == "exerciseinfo"
+        ));
+
+        let summary =
+            parse_gpx_route(fixture).expect("anonymized Samsung Health trace should parse");
+        assert_eq!(summary.points.len(), 2);
+    }
+
+    #[test]
+    fn does_not_ignore_unknown_root_elements() {
+        let gpx = br#"<?xml version="1.0"?>
+<gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">
+  <unexpected>value</unexpected>
+</gpx>"#;
+
+        assert!(matches!(
+            read_gpx_tolerating_known_export_issues(gpx),
+            Err(GpxError::InvalidChildElement(child, "gpx")) if child == "unexpected"
+        ));
     }
 
     #[test]
