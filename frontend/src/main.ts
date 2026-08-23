@@ -19,6 +19,7 @@ type RouteSummary = {
 };
 
 type WaterPoint = {
+  osm_type: 'node' | 'way';
   osm_id: number;
   name?: string;
   lat: number;
@@ -74,7 +75,7 @@ const filterButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[
 
 let currentAnalysis: AnalyzeResponse | null = null;
 let selectedDistance = 200;
-let selectedWaterPointId: number | null = null;
+let selectedWaterPointKey: string | null = null;
 let routeLayer: L.Polyline | null = null;
 let markerLayer = L.layerGroup();
 let currentTileLayer = createTileLayer('opentopo');
@@ -154,7 +155,7 @@ async function analyzeFile(file: File, source: 'upload' | 'example'): Promise<vo
     }
 
     currentAnalysis = (await response.json()) as AnalyzeResponse;
-    selectedWaterPointId = null;
+    selectedWaterPointKey = null;
     renderAnalysis();
     setStatus('', 'neutral');
   } catch (error) {
@@ -199,10 +200,10 @@ function renderAnalysis(): void {
     (point) => point.distance_to_route_m <= selectedDistance
   );
   if (
-    selectedWaterPointId !== null &&
-    !visibleWaterPoints.some((point) => point.osm_id === selectedWaterPointId)
+    selectedWaterPointKey !== null &&
+    !visibleWaterPoints.some((point) => waterPointKey(point) === selectedWaterPointKey)
   ) {
-    selectedWaterPointId = null;
+    selectedWaterPointKey = null;
   }
   waterCount.textContent = `${visibleWaterPoints.length} ${visibleWaterPoints.length === 1 ? 'water point' : 'water points'}`;
   renderElevationProfile(currentAnalysis.route, visibleWaterPoints);
@@ -240,14 +241,15 @@ function renderMap(analysis: AnalyzeResponse): void {
   }).addTo(map);
 
   for (const point of visibleWaterPoints) {
-    const selected = point.osm_id === selectedWaterPointId;
+    const pointKey = waterPointKey(point);
+    const selected = pointKey === selectedWaterPointKey;
     L.marker([point.lat, point.lon], { icon: waterIcon(selected), zIndexOffset: selected ? 1000 : 0 })
       .bindPopup(
         `<strong>${escapeHtml(point.name ?? 'Drinking Water')}</strong><br>Km: ${point.km.toFixed(
           1
         )}<br>Distance: ${Math.round(point.distance_to_route_m)} m`
       )
-      .on('click', () => selectWaterPoint(point.osm_id))
+      .on('click', () => selectWaterPoint(pointKey))
       .addTo(markerLayer);
   }
 
@@ -267,7 +269,7 @@ function renderTable(points: WaterPoint[]): void {
 
   waterTable.innerHTML = points
     .map(
-      (point) => `<tr data-osm-id="${point.osm_id}" class="${point.osm_id === selectedWaterPointId ? 'selected' : ''}" tabindex="0">
+      (point) => `<tr data-osm-key="${waterPointKey(point)}" class="${waterPointKey(point) === selectedWaterPointKey ? 'selected' : ''}" tabindex="0">
         <td><strong>${point.km.toFixed(1)}</strong></td>
         <td><span class="offset-pill">${Math.round(point.distance_to_route_m)} m</span></td>
         <td>
@@ -278,12 +280,12 @@ function renderTable(points: WaterPoint[]): void {
     )
     .join('');
 
-  for (const row of waterTable.querySelectorAll<HTMLTableRowElement>('tr[data-osm-id]')) {
-    row.addEventListener('click', () => selectWaterPoint(Number(row.dataset.osmId)));
+  for (const row of waterTable.querySelectorAll<HTMLTableRowElement>('tr[data-osm-key]')) {
+    row.addEventListener('click', () => selectWaterPoint(row.dataset.osmKey ?? ''));
     row.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        selectWaterPoint(Number(row.dataset.osmId));
+        selectWaterPoint(row.dataset.osmKey ?? '');
       }
     });
   }
@@ -352,8 +354,9 @@ function renderElevationProfile(route: RouteSummary, waterPoints: WaterPoint[]):
           if (elevation === null) {
             return '';
           }
-          const selected = point.osm_id === selectedWaterPointId;
-          return `<g class="profile-marker-hit" data-osm-id="${point.osm_id}" role="button" tabindex="0" aria-label="${escapeHtml(
+          const pointKey = waterPointKey(point);
+          const selected = pointKey === selectedWaterPointKey;
+          return `<g class="profile-marker-hit" data-osm-key="${pointKey}" role="button" tabindex="0" aria-label="${escapeHtml(
             point.name ?? 'Water point'
           )} at ${point.km.toFixed(1)} km">
             <circle class="profile-marker ${selected ? 'selected' : ''}" cx="${xForDistance(distanceM).toFixed(
@@ -365,11 +368,11 @@ function renderElevationProfile(route: RouteSummary, waterPoints: WaterPoint[]):
     </svg>`;
 
   for (const marker of elevationProfile.querySelectorAll<SVGElement>('.profile-marker-hit')) {
-    marker.addEventListener('click', () => selectWaterPoint(Number(marker.dataset.osmId)));
+    marker.addEventListener('click', () => selectWaterPoint(marker.dataset.osmKey ?? ''));
     marker.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        selectWaterPoint(Number(marker.dataset.osmId));
+        selectWaterPoint(marker.dataset.osmKey ?? '');
       }
     });
   }
@@ -494,8 +497,12 @@ function escapeHtml(value: string): string {
   });
 }
 
-function selectWaterPoint(osmId: number): void {
-  selectedWaterPointId = selectedWaterPointId === osmId ? null : osmId;
+function waterPointKey(point: WaterPoint): string {
+  return `${point.osm_type}:${point.osm_id}`;
+}
+
+function selectWaterPoint(pointKey: string): void {
+  selectedWaterPointKey = selectedWaterPointKey === pointKey ? null : pointKey;
   renderAnalysis();
 }
 

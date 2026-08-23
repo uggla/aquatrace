@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1" creator="EditGPX">
+  <metadata><name>trace_toilette_eau</name></metadata>
+  <trk><trkseg>
+    <trkpt lat="46.161551" lon="4.680173"><ele>286.5</ele></trkpt>
+    <trkpt lat="46.161428" lon="4.680218"><ele>286.4</ele></trkpt>
+    <trkpt lat="46.161230" lon="4.680344"><ele>286.2</ele></trkpt>
+    <trkpt lat="46.161124" lon="4.680415"><ele>286</ele></trkpt>
+    <trkpt lat="46.161079" lon="4.680443"><ele>285.8</ele></trkpt>
+    <trkpt lat="46.160820" lon="4.680604"><ele>284.6</ele></trkpt>
+    <trkpt lat="46.160732" lon="4.680645"><ele>284.1</ele></trkpt>
+    <trkpt lat="46.160723" lon="4.680618"><ele>284.2</ele></trkpt>
+    <trkpt lat="46.160713" lon="4.680604"><ele>284.3</ele></trkpt>
+    <trkpt lat="46.160698" lon="4.680582"><ele>284.4</ele></trkpt>
+    <trkpt lat="46.160665" lon="4.680562"><ele>284.4</ele></trkpt>
+    <trkpt lat="46.160630" lon="4.680558"><ele>284.3</ele></trkpt>
+    <trkpt lat="46.160596" lon="4.680572"><ele>284.1</ele></trkpt>
+    <trkpt lat="46.160578" lon="4.680588"><ele>284</ele></trkpt>
+    <trkpt lat="46.160555" lon="4.680625"><ele>283.8</ele></trkpt>
+    <trkpt lat="46.160550" lon="4.680637"><ele>283.7</ele></trkpt>
+    <trkpt lat="46.160484" lon="4.680602"><ele>284.1</ele></trkpt>
+    <trkpt lat="46.160382" lon="4.680561"><ele>284.6</ele></trkpt>
+    <trkpt lat="46.160237" lon="4.680527"><ele>285.2</ele></trkpt>
+    <trkpt lat="46.160086" lon="4.680491"><ele>285.9</ele></trkpt>
+    <trkpt lat="46.159988" lon="4.680442"><ele>286.4</ele></trkpt>
+    <trkpt lat="46.159944" lon="4.680410"><ele>286.4</ele></trkpt>
+    <trkpt lat="46.159902" lon="4.680360"><ele>286.6</ele></trkpt>
+    <trkpt lat="46.159863" lon="4.680307"><ele>286.8</ele></trkpt>
+    <trkpt lat="46.159822" lon="4.680207"><ele>287.3</ele></trkpt>
+    <trkpt lat="46.159806" lon="4.680074"><ele>288</ele></trkpt>
+    <trkpt lat="46.159865" lon="4.679438"><ele>291.5</ele></trkpt>
+    <trkpt lat="46.159878" lon="4.679324"><ele>292.2</ele></trkpt>
+    <trkpt lat="46.160041" lon="4.677901"><ele>300.7</ele></trkpt>
+    <trkpt lat="46.160112" lon="4.677323"><ele>303.7</ele></trkpt>
+    <trkpt lat="46.160682" lon="4.677749"><ele>301.2</ele></trkpt>
+    <trkpt lat="46.160958" lon="4.677987"><ele>300</ele></trkpt>
+    <trkpt lat="46.161329" lon="4.678330"><ele>296.5</ele></trkpt>
+    <trkpt lat="46.161747" lon="4.678631"><ele>293.2</ele></trkpt>
+    <trkpt lat="46.161822" lon="4.678723"><ele>293.1</ele></trkpt>
+    <trkpt lat="46.161822" lon="4.678723"><ele>293.1</ele></trkpt>
+    <trkpt lat="46.161862" lon="4.678805"><ele>292.7</ele></trkpt>
+    <trkpt lat="46.161960" lon="4.679444"><ele>289</ele></trkpt>
+    <trkpt lat="46.161985" lon="4.679502"><ele>288.8</ele></trkpt>
+    <trkpt lat="46.162009" lon="4.679525"><ele>288.6</ele></trkpt>
+    <trkpt lat="46.161879" lon="4.679780"><ele>287.8</ele></trkpt>
+    <trkpt lat="46.161769" lon="4.679951"><ele>287</ele></trkpt>
+    <trkpt lat="46.161753" lon="4.680008"><ele>286.7</ele></trkpt>
+    <trkpt lat="46.161752" lon="4.680164"><ele>286.1</ele></trkpt>
+  </trkseg></trk>
+</gpx>

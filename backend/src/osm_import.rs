@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{Read, Result as IoResult},
     path::{Path, PathBuf},
@@ -24,12 +24,13 @@ use tracing::{error, info, warn};
 
 use crate::{
     Config, store,
-    types::{OsmWaterPoint, RoutePoint},
+    types::{OsmElementType, OsmWaterPoint, RoutePoint},
 };
 
 const IMPORT_POLL_SECONDS: u64 = 3_600;
 const PROGRESS_LOG_SECONDS: u64 = 5;
 const PBF_FILE_NAME: &str = "europe-latest.osm.pbf";
+const DATASET_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalPbfState {
@@ -41,7 +42,7 @@ enum LocalPbfState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupAction {
     BlockingImport,
-    BackgroundRefresh,
+    BackgroundRefresh { force_download: bool },
     Ready,
 }
 
@@ -51,13 +52,20 @@ fn startup_action(
     force_download: bool,
     import_on_startup: bool,
     latest_import_is_stale: bool,
+    dataset_is_current: bool,
 ) -> StartupAction {
     if pbf_state == LocalPbfState::Absent || !database_is_usable {
         StartupAction::BlockingImport
-    } else if force_download
+    } else if force_download {
+        StartupAction::BackgroundRefresh {
+            force_download: true,
+        }
+    } else if !dataset_is_current
         || (import_on_startup && (pbf_state == LocalPbfState::Stale || latest_import_is_stale))
     {
-        StartupAction::BackgroundRefresh
+        StartupAction::BackgroundRefresh {
+            force_download: pbf_state == LocalPbfState::Stale,
+        }
     } else {
         StartupAction::Ready
     }
@@ -67,7 +75,7 @@ pub async fn prepare_initial_data(
     pool: &SqlitePool,
     config: &Config,
     force_download: bool,
-) -> Result<bool> {
+) -> Result<Option<bool>> {
     let pbf_path = config.osm_import_dir.join(PBF_FILE_NAME);
     let pbf_state = local_pbf_state(&pbf_path, config).await?;
     let has_water_points = store::has_water_points(pool).await?;
@@ -80,6 +88,7 @@ pub async fn prepare_initial_data(
         force_download,
         config.osm_import_on_startup,
         successful_import_is_stale(latest_import.as_ref(), config),
+        successful_import_has_current_dataset(latest_import.as_ref()),
     );
 
     match action {
@@ -91,30 +100,34 @@ pub async fn prepare_initial_data(
                 "OSM data is not ready; completing import before serving requests"
             );
             run_import(pool, config, force_download).await?;
-            Ok(false)
+            Ok(None)
         }
-        StartupAction::BackgroundRefresh => {
+        StartupAction::BackgroundRefresh { force_download } => {
             info!(
                 pbf_state = ?pbf_state,
                 force_download,
                 "OSM data is usable; scheduling refresh in the background"
             );
-            Ok(true)
+            Ok(Some(force_download))
         }
-        StartupAction::Ready => Ok(false),
+        StartupAction::Ready => Ok(None),
     }
 }
 
-pub fn spawn_import_scheduler(pool: SqlitePool, config: Arc<Config>, refresh_on_start: bool) {
+pub fn spawn_import_scheduler(
+    pool: SqlitePool,
+    config: Arc<Config>,
+    refresh_on_start: Option<bool>,
+) {
     tokio::spawn(async move {
         let mut ticker = interval(std::time::Duration::from_secs(IMPORT_POLL_SECONDS));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        let mut forced_refresh_pending = refresh_on_start;
+        let mut refresh_pending = refresh_on_start;
         ticker.tick().await;
 
-        if forced_refresh_pending {
-            match run_import(&pool, &config, true).await {
-                Ok(()) => forced_refresh_pending = false,
+        if let Some(force_download) = refresh_pending {
+            match run_import(&pool, &config, force_download).await {
+                Ok(()) => refresh_pending = None,
                 Err(error) => error!("scheduled OSM import failed: {error:#}"),
             }
         }
@@ -122,17 +135,19 @@ pub fn spawn_import_scheduler(pool: SqlitePool, config: Arc<Config>, refresh_on_
         loop {
             ticker.tick().await;
 
-            let import_is_due = if forced_refresh_pending {
+            let import_is_due = if refresh_pending.is_some() {
                 Ok(true)
             } else {
                 import_due(&pool, &config).await
             };
 
             match import_is_due {
-                Ok(true) => match run_import(&pool, &config, forced_refresh_pending).await {
-                    Ok(()) => forced_refresh_pending = false,
-                    Err(error) => error!("scheduled OSM import failed: {error:#}"),
-                },
+                Ok(true) => {
+                    match run_import(&pool, &config, refresh_pending.unwrap_or(false)).await {
+                        Ok(()) => refresh_pending = None,
+                        Err(error) => error!("scheduled OSM import failed: {error:#}"),
+                    }
+                }
                 Ok(false) => {}
                 Err(error) => warn!("failed to check OSM import freshness: {error:#}"),
             }
@@ -150,7 +165,12 @@ async fn import_due(pool: &SqlitePool, config: &Config) -> Result<bool> {
         return Ok(true);
     };
 
-    Ok(successful_import_is_stale(Some(&latest), config))
+    Ok(!successful_import_has_current_dataset(Some(&latest))
+        || successful_import_is_stale(Some(&latest), config))
+}
+
+fn successful_import_has_current_dataset(latest: Option<&store::OsmImportStatus>) -> bool {
+    latest.is_some_and(|import| import.dataset_version == DATASET_VERSION)
 }
 
 fn successful_import_is_stale(latest: Option<&store::OsmImportStatus>, config: &Config) -> bool {
@@ -163,7 +183,8 @@ fn successful_import_is_stale(latest: Option<&store::OsmImportStatus>, config: &
 
 pub async fn run_import(pool: &SqlitePool, config: &Config, force_download: bool) -> Result<()> {
     let started_at = Utc::now();
-    let import_id = store::start_import(pool, &config.osm_pbf_url, started_at).await?;
+    let import_id =
+        store::start_import(pool, &config.osm_pbf_url, started_at, DATASET_VERSION).await?;
     let result = run_import_inner(pool, config, import_id, force_download).await;
 
     match &result {
@@ -192,7 +213,7 @@ async fn run_import_inner(
         import_dir = %config.osm_import_dir.display(),
         "starting OSM import"
     );
-    let pbf_path = import_pbf_path(pool, config, import_id, force_download).await?;
+    let pbf_path = import_pbf_path(config, import_id, force_download).await?;
     info!(
         import_id,
         pbf_path = %pbf_path.display(),
@@ -246,20 +267,12 @@ async fn download_pbf(url: &str, import_dir: &Path, import_id: i64) -> Result<Pa
     result.map(|_| final_path)
 }
 
-async fn import_pbf_path(
-    pool: &SqlitePool,
-    config: &Config,
-    import_id: i64,
-    force_download: bool,
-) -> Result<PathBuf> {
+async fn import_pbf_path(config: &Config, import_id: i64, force_download: bool) -> Result<PathBuf> {
     let local_path = config.osm_import_dir.join(PBF_FILE_NAME);
-    if !force_download
-        && !store::has_water_points(pool).await?
-        && local_pbf_state(&local_path, config).await? == LocalPbfState::Fresh
-    {
+    if !force_download && local_pbf_state(&local_path, config).await? == LocalPbfState::Fresh {
         info!(
             pbf_path = %local_path.display(),
-            "using existing OSM PBF dump for initial import"
+            "using existing fresh OSM PBF dump"
         );
         return Ok(local_path);
     }
@@ -429,16 +442,69 @@ impl<R: Read> Read for ProgressReader<R> {
 }
 
 async fn parse_drinking_water_points(path: PathBuf, import_id: i64) -> Result<Vec<OsmWaterPoint>> {
+    let scan = run_pbf_phase(
+        &path,
+        import_id,
+        "scanning_water_objects",
+        scan_water_objects_blocking,
+    )
+    .await?;
+    let mut points = scan.points;
+
+    if scan.ways.is_empty() {
+        return Ok(points.into_values().collect());
+    }
+
+    let required_node_ids = Arc::new(
+        scan.ways
+            .values()
+            .flat_map(|way| way.node_refs.iter().copied())
+            .collect::<HashSet<_>>(),
+    );
+    let lookup_ids = Arc::clone(&required_node_ids);
+    let node_coordinates = run_pbf_phase(
+        &path,
+        import_id,
+        "resolving_way_nodes",
+        move |task_path, progress| {
+            resolve_node_coordinates_blocking(&task_path, progress, lookup_ids)
+        },
+    )
+    .await?;
+
+    let mut skipped_ways = 0_usize;
+    for way in scan.ways.into_values() {
+        if let Some(point) = water_point_from_way(way, &node_coordinates) {
+            points.insert((point.osm_type, point.osm_id), point);
+        } else {
+            skipped_ways += 1;
+        }
+    }
+
+    if skipped_ways > 0 {
+        warn!(
+            import_id,
+            skipped_way_count = skipped_ways,
+            "skipped eligible OSM ways with incomplete or invalid geometry"
+        );
+    }
+
+    Ok(points.into_values().collect())
+}
+
+async fn run_pbf_phase<T, F>(path: &Path, import_id: i64, phase: &'static str, task: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(PathBuf, Arc<ParseProgress>) -> Result<T> + Send + 'static,
+{
     let total_bytes = fs::metadata(&path)
         .await
         .with_context(|| format!("failed to stat {}", path.display()))?
         .len();
     let progress = Arc::new(ParseProgress::default());
     let task_progress = Arc::clone(&progress);
-    let task_path = path.clone();
-    let mut parser_task = tokio::task::spawn_blocking(move || {
-        parse_drinking_water_points_blocking(&task_path, task_progress)
-    });
+    let task_path = path.to_path_buf();
+    let mut parser_task = tokio::task::spawn_blocking(move || task(task_path, task_progress));
     let started_at = Instant::now();
     let progress_interval = StdDuration::from_secs(PROGRESS_LOG_SECONDS);
     let mut ticker = interval_at(TokioInstant::now() + progress_interval, progress_interval);
@@ -447,12 +513,12 @@ async fn parse_drinking_water_points(path: PathBuf, import_id: i64) -> Result<Ve
     loop {
         tokio::select! {
             result = &mut parser_task => {
-                let points = result.context("OSM PBF parser task failed")??;
-                log_parse_progress(import_id, &progress, total_bytes, started_at.elapsed());
-                return Ok(points);
+                let value = result.context("OSM PBF parser task failed")??;
+                log_parse_progress(import_id, phase, &progress, total_bytes, started_at.elapsed());
+                return Ok(value);
             }
             _ = ticker.tick() => {
-                log_parse_progress(import_id, &progress, total_bytes, started_at.elapsed());
+                log_parse_progress(import_id, phase, &progress, total_bytes, started_at.elapsed());
             }
         }
     }
@@ -460,6 +526,7 @@ async fn parse_drinking_water_points(path: PathBuf, import_id: i64) -> Result<Ve
 
 fn log_parse_progress(
     import_id: i64,
+    phase: &str,
     progress: &ParseProgress,
     total_bytes: u64,
     elapsed: StdDuration,
@@ -469,7 +536,7 @@ fn log_parse_progress(
     let estimated_percent = estimated_read_percent(bytes_read, total_bytes);
     info!(
         import_id,
-        phase = "parsing_pbf",
+        phase,
         bytes_read,
         total_bytes,
         estimated_percent = format_args!("{estimated_percent:.1}"),
@@ -487,25 +554,123 @@ fn estimated_read_percent(bytes_read: u64, total_bytes: u64) -> f64 {
     }
 }
 
-fn parse_drinking_water_points_blocking(
+#[derive(Default)]
+struct WaterObjectScan {
+    points: HashMap<(OsmElementType, i64), OsmWaterPoint>,
+    ways: HashMap<i64, WaterWay>,
+}
+
+struct WaterWay {
+    osm_id: i64,
+    name: Option<String>,
+    node_refs: Vec<i64>,
+}
+
+fn scan_water_objects_blocking(
+    path: PathBuf,
+    progress: Arc<ParseProgress>,
+) -> Result<WaterObjectScan> {
+    let file = File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
+    let reader = ElementReader::new(ProgressReader {
+        inner: file,
+        progress: Arc::clone(&progress),
+    });
+
+    reader
+        .par_map_reduce(
+            |element| {
+                progress.elements_processed.fetch_add(1, Ordering::Relaxed);
+                let mut scan = WaterObjectScan::default();
+                match element {
+                    Element::Node(node) => {
+                        let point = RoutePoint {
+                            lat: node.lat(),
+                            lon: node.lon(),
+                            ele: None,
+                        };
+                        if let Some(point) = water_point_from_parts(node.id(), point, node.tags()) {
+                            scan.points.insert((point.osm_type, point.osm_id), point);
+                        }
+                    }
+                    Element::DenseNode(node) => {
+                        let point = RoutePoint {
+                            lat: node.lat(),
+                            lon: node.lon(),
+                            ele: None,
+                        };
+                        if let Some(point) = water_point_from_parts(node.id(), point, node.tags()) {
+                            scan.points.insert((point.osm_type, point.osm_id), point);
+                        }
+                    }
+                    Element::Way(way) => {
+                        if let Some(name) = qualifying_water_name(way.tags()) {
+                            scan.ways.insert(
+                                way.id(),
+                                WaterWay {
+                                    osm_id: way.id(),
+                                    name,
+                                    node_refs: way.refs().collect(),
+                                },
+                            );
+                        }
+                    }
+                    Element::Relation(_) => {}
+                }
+                scan
+            },
+            WaterObjectScan::default,
+            |mut left, right| {
+                left.points.extend(right.points);
+                left.ways.extend(right.ways);
+                left
+            },
+        )
+        .with_context(|| format!("failed to read {}", path.display()))
+}
+
+fn resolve_node_coordinates_blocking(
     path: &Path,
     progress: Arc<ParseProgress>,
-) -> Result<Vec<OsmWaterPoint>> {
+    required_node_ids: Arc<HashSet<i64>>,
+) -> Result<HashMap<i64, RoutePoint>> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let reader = ElementReader::new(ProgressReader {
         inner: file,
         progress: Arc::clone(&progress),
     });
 
-    let points = reader
+    reader
         .par_map_reduce(
             |element| {
                 progress.elements_processed.fetch_add(1, Ordering::Relaxed);
-                let mut points = HashMap::new();
-                if let Some(point) = water_point_from_element(element) {
-                    points.insert(point.osm_id, point);
+                let mut coordinates = HashMap::new();
+                match element {
+                    Element::Node(node) if required_node_ids.contains(&node.id()) => {
+                        coordinates.insert(
+                            node.id(),
+                            RoutePoint {
+                                lat: node.lat(),
+                                lon: node.lon(),
+                                ele: None,
+                            },
+                        );
+                    }
+                    Element::DenseNode(node) if required_node_ids.contains(&node.id()) => {
+                        coordinates.insert(
+                            node.id(),
+                            RoutePoint {
+                                lat: node.lat(),
+                                lon: node.lon(),
+                                ele: None,
+                            },
+                        );
+                    }
+                    Element::Node(_)
+                    | Element::DenseNode(_)
+                    | Element::Way(_)
+                    | Element::Relation(_) => {}
                 }
-                points
+                coordinates
             },
             HashMap::new,
             |mut left, right| {
@@ -513,33 +678,7 @@ fn parse_drinking_water_points_blocking(
                 left
             },
         )
-        .with_context(|| format!("failed to read {}", path.display()))?;
-
-    Ok(points.into_values().collect())
-}
-
-fn water_point_from_element(element: Element<'_>) -> Option<OsmWaterPoint> {
-    match element {
-        Element::Node(node) => water_point_from_parts(
-            node.id(),
-            RoutePoint {
-                lat: node.lat(),
-                lon: node.lon(),
-                ele: None,
-            },
-            node.tags(),
-        ),
-        Element::DenseNode(node) => water_point_from_parts(
-            node.id(),
-            RoutePoint {
-                lat: node.lat(),
-                lon: node.lon(),
-                ele: None,
-            },
-            node.tags(),
-        ),
-        Element::Way(_) | Element::Relation(_) => None,
-    }
+        .with_context(|| format!("failed to read {}", path.display()))
 }
 
 fn water_point_from_parts<'a>(
@@ -547,23 +686,112 @@ fn water_point_from_parts<'a>(
     point: RoutePoint,
     tags: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Option<OsmWaterPoint> {
-    let mut is_drinking_water = false;
-    let mut name = None;
+    let name = qualifying_water_name(tags)?;
 
-    for (key, value) in tags {
-        match key {
-            "amenity" if value == "drinking_water" => is_drinking_water = true,
-            "name" => name = Some(value.to_owned()),
-            _ => {}
-        }
-    }
-
-    is_drinking_water.then_some(OsmWaterPoint {
+    Some(OsmWaterPoint {
+        osm_type: OsmElementType::Node,
         osm_id,
         lat: point.lat,
         lon: point.lon,
         name,
     })
+}
+
+fn qualifying_water_name<'a>(
+    tags: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<Option<String>> {
+    let mut amenity = None;
+    let mut drinking_water = None;
+    let mut name = None;
+
+    for (key, value) in tags {
+        match key {
+            "amenity" => amenity = Some(value),
+            "drinking_water" => drinking_water = Some(value),
+            "name" => name = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+
+    (amenity == Some("drinking_water")
+        || (amenity == Some("toilets") && drinking_water == Some("yes")))
+    .then_some(name)
+}
+
+fn water_point_from_way(
+    way: WaterWay,
+    node_coordinates: &HashMap<i64, RoutePoint>,
+) -> Option<OsmWaterPoint> {
+    let closed = way.node_refs.first() == way.node_refs.last();
+    let mut points = way
+        .node_refs
+        .iter()
+        .map(|node_id| node_coordinates.get(node_id).copied())
+        .collect::<Option<Vec<_>>>()?;
+
+    if closed {
+        points.pop();
+    }
+    if points.len() < 2 {
+        return None;
+    }
+
+    let center = if closed {
+        polygon_centroid(&points).unwrap_or_else(|| average_point(&points))
+    } else {
+        average_point(&points)
+    };
+
+    Some(OsmWaterPoint {
+        osm_type: OsmElementType::Way,
+        osm_id: way.osm_id,
+        lat: center.lat,
+        lon: center.lon,
+        name: way.name,
+    })
+}
+
+fn polygon_centroid(points: &[RoutePoint]) -> Option<RoutePoint> {
+    if points.len() < 3 {
+        return None;
+    }
+
+    let mut area_twice = 0.0;
+    let mut weighted_lon = 0.0;
+    let mut weighted_lat = 0.0;
+    let origin_lon = points[0].lon;
+    let origin_lat = points[0].lat;
+    for index in 0..points.len() {
+        let current = points[index];
+        let next = points[(index + 1) % points.len()];
+        let current_lon = current.lon - origin_lon;
+        let current_lat = current.lat - origin_lat;
+        let next_lon = next.lon - origin_lon;
+        let next_lat = next.lat - origin_lat;
+        let cross = current_lon * next_lat - next_lon * current_lat;
+        area_twice += cross;
+        weighted_lon += (current_lon + next_lon) * cross;
+        weighted_lat += (current_lat + next_lat) * cross;
+    }
+
+    if area_twice.abs() < 1e-12 {
+        return None;
+    }
+
+    Some(RoutePoint {
+        lat: origin_lat + weighted_lat / (3.0 * area_twice),
+        lon: origin_lon + weighted_lon / (3.0 * area_twice),
+        ele: None,
+    })
+}
+
+fn average_point(points: &[RoutePoint]) -> RoutePoint {
+    let count = points.len() as f64;
+    RoutePoint {
+        lat: points.iter().map(|point| point.lat).sum::<f64>() / count,
+        lon: points.iter().map(|point| point.lon).sum::<f64>() / count,
+        ele: None,
+    }
 }
 
 #[cfg(test)]
@@ -584,7 +812,29 @@ mod tests {
         .unwrap();
 
         assert_eq!(point.osm_id, 12);
+        assert_eq!(point.osm_type, OsmElementType::Node);
         assert_eq!(point.name.as_deref(), Some("Village Tap"));
+    }
+
+    #[test]
+    fn extracts_toilets_with_drinking_water() {
+        let point = water_point_from_parts(
+            13,
+            RoutePoint {
+                lat: 45.0,
+                lon: 5.0,
+                ele: None,
+            },
+            [
+                ("amenity", "toilets"),
+                ("drinking_water", "yes"),
+                ("name", "Public toilets"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(point.osm_id, 13);
+        assert_eq!(point.name.as_deref(), Some("Public toilets"));
     }
 
     #[test]
@@ -603,6 +853,133 @@ mod tests {
     }
 
     #[test]
+    fn ignores_toilets_without_confirmed_drinking_water() {
+        for value in ["no", "separate", "customers"] {
+            assert!(
+                qualifying_water_name([("amenity", "toilets"), ("drinking_water", value)])
+                    .is_none()
+            );
+        }
+        assert!(qualifying_water_name([("amenity", "toilets")]).is_none());
+    }
+
+    #[test]
+    fn locates_closed_water_way_at_polygon_centroid() {
+        let way = WaterWay {
+            osm_id: 99,
+            name: Some("Water toilets".to_owned()),
+            node_refs: vec![1, 2, 3, 4, 1],
+        };
+        let coordinates = HashMap::from([
+            (
+                1,
+                RoutePoint {
+                    lat: 45.0,
+                    lon: 5.0,
+                    ele: None,
+                },
+            ),
+            (
+                2,
+                RoutePoint {
+                    lat: 45.0,
+                    lon: 5.002,
+                    ele: None,
+                },
+            ),
+            (
+                3,
+                RoutePoint {
+                    lat: 45.002,
+                    lon: 5.002,
+                    ele: None,
+                },
+            ),
+            (
+                4,
+                RoutePoint {
+                    lat: 45.002,
+                    lon: 5.0,
+                    ele: None,
+                },
+            ),
+        ]);
+
+        let point = water_point_from_way(way, &coordinates).unwrap();
+        assert_eq!(point.osm_type, OsmElementType::Way);
+        assert!((point.lat - 45.001).abs() < 1e-8);
+        assert!((point.lon - 5.001).abs() < 1e-8);
+    }
+
+    #[test]
+    fn rejects_water_way_with_missing_node() {
+        let way = WaterWay {
+            osm_id: 99,
+            name: None,
+            node_refs: vec![1, 2, 3, 1],
+        };
+        let coordinates = HashMap::from([
+            (
+                1,
+                RoutePoint {
+                    lat: 45.0,
+                    lon: 5.0,
+                    ele: None,
+                },
+            ),
+            (
+                2,
+                RoutePoint {
+                    lat: 45.0,
+                    lon: 5.001,
+                    ele: None,
+                },
+            ),
+        ]);
+
+        assert!(water_point_from_way(way, &coordinates).is_none());
+    }
+
+    #[test]
+    fn locates_open_water_way_at_average_point() {
+        let way = WaterWay {
+            osm_id: 100,
+            name: None,
+            node_refs: vec![1, 2, 3],
+        };
+        let coordinates = HashMap::from([
+            (
+                1,
+                RoutePoint {
+                    lat: 45.0,
+                    lon: 5.0,
+                    ele: None,
+                },
+            ),
+            (
+                2,
+                RoutePoint {
+                    lat: 45.003,
+                    lon: 5.003,
+                    ele: None,
+                },
+            ),
+            (
+                3,
+                RoutePoint {
+                    lat: 45.006,
+                    lon: 5.006,
+                    ele: None,
+                },
+            ),
+        ]);
+
+        let point = water_point_from_way(way, &coordinates).unwrap();
+        assert!((point.lat - 45.003).abs() < 1e-10);
+        assert!((point.lon - 5.003).abs() < 1e-10);
+    }
+
+    #[test]
     fn startup_requires_blocking_import_without_complete_local_data() {
         for (pbf_state, database_is_usable) in [
             (LocalPbfState::Absent, false),
@@ -611,7 +988,7 @@ mod tests {
             (LocalPbfState::Stale, false),
         ] {
             assert_eq!(
-                startup_action(pbf_state, database_is_usable, false, false, false),
+                startup_action(pbf_state, database_is_usable, false, false, false, true),
                 StartupAction::BlockingImport
             );
         }
@@ -620,27 +997,43 @@ mod tests {
     #[test]
     fn usable_data_refreshes_in_background_when_requested_or_stale() {
         assert_eq!(
-            startup_action(LocalPbfState::Fresh, true, true, false, false),
-            StartupAction::BackgroundRefresh
+            startup_action(LocalPbfState::Fresh, true, true, false, false, true),
+            StartupAction::BackgroundRefresh {
+                force_download: true
+            }
         );
         assert_eq!(
-            startup_action(LocalPbfState::Stale, true, false, true, false),
-            StartupAction::BackgroundRefresh
+            startup_action(LocalPbfState::Stale, true, false, true, false, true),
+            StartupAction::BackgroundRefresh {
+                force_download: true
+            }
         );
         assert_eq!(
-            startup_action(LocalPbfState::Fresh, true, false, true, true),
-            StartupAction::BackgroundRefresh
+            startup_action(LocalPbfState::Fresh, true, false, true, true, true),
+            StartupAction::BackgroundRefresh {
+                force_download: false
+            }
+        );
+    }
+
+    #[test]
+    fn outdated_dataset_refreshes_from_fresh_local_pbf() {
+        assert_eq!(
+            startup_action(LocalPbfState::Fresh, true, false, false, false, false),
+            StartupAction::BackgroundRefresh {
+                force_download: false
+            }
         );
     }
 
     #[test]
     fn disabling_startup_refresh_keeps_usable_data_ready() {
         assert_eq!(
-            startup_action(LocalPbfState::Stale, true, false, false, true),
+            startup_action(LocalPbfState::Stale, true, false, false, true, true),
             StartupAction::Ready
         );
         assert_eq!(
-            startup_action(LocalPbfState::Fresh, true, false, true, false),
+            startup_action(LocalPbfState::Fresh, true, false, true, false, true),
             StartupAction::Ready
         );
     }

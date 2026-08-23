@@ -594,6 +594,7 @@ mod tests {
     #[tokio::test]
     async fn analyze_route_success_and_persists_cache() {
         let (app, temp) = test_app(vec![OsmWaterPoint {
+            osm_type: crate::types::OsmElementType::Node,
             osm_id: 123,
             lat: 45.005,
             lon: 5.001,
@@ -605,6 +606,7 @@ mod tests {
         let json = response_json(response).await;
 
         assert!(json["route"]["distance_m"].as_f64().unwrap() > 1000.0);
+        assert_eq!(json["water_points"][0]["osm_type"], "node");
         assert_eq!(json["water_points"][0]["osm_id"], 123);
         assert_eq!(json["water_points"][0]["name"], "Village Fountain");
         let files = archive_files(&temp, "valid");

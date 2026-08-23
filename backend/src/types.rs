@@ -1,5 +1,30 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum OsmElementType {
+    #[default]
+    Node,
+    Way,
+}
+
+impl OsmElementType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Way => "way",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "node" => Some(Self::Node),
+            "way" => Some(Self::Way),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct RoutePoint {
     pub lat: f64,
@@ -22,6 +47,8 @@ pub struct RouteSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WaterPointResult {
+    #[serde(default)]
+    pub osm_type: OsmElementType,
     pub osm_id: i64,
     pub name: Option<String>,
     pub lat: f64,
@@ -107,6 +134,7 @@ impl BBox {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OsmWaterPoint {
+    pub osm_type: OsmElementType,
     pub osm_id: i64,
     pub lat: f64,
     pub lon: f64,

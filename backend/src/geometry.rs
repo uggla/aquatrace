@@ -108,6 +108,7 @@ pub fn project_water_points(
         .filter_map(|point| {
             let projection = index.project_point(point.lat, point.lon)?;
             (projection.distance_to_route_m <= max_distance_m).then(|| WaterPointResult {
+                osm_type: point.osm_type,
                 osm_id: point.osm_id,
                 name: point.name.clone(),
                 lat: point.lat,
@@ -220,12 +221,14 @@ mod tests {
         let route = sample_route();
         let points = vec![
             OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Node,
                 osm_id: 1,
                 lat: 45.005,
                 lon: 5.001,
                 name: Some("Near".to_owned()),
             },
             OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Node,
                 osm_id: 2,
                 lat: 45.005,
                 lon: 5.02,
@@ -250,6 +253,39 @@ mod tests {
         assert!(projection.distance_to_route_m < 170.0);
     }
 
+    #[test]
+    fn finds_drinking_water_node_and_toilet_way_on_regression_trace() {
+        let route = parse_gpx_route(include_bytes!(
+            "../tests/fixtures/trace_toilette_eau_wq5ru.gpx"
+        ))
+        .unwrap();
+        let points = vec![
+            OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Node,
+                osm_id: 5_848_039_023,
+                lat: 46.1599161,
+                lon: 4.6794721,
+                name: None,
+            },
+            OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Way,
+                osm_id: 140_994_931,
+                lat: 46.16054,
+                lon: 4.680389,
+                name: None,
+            },
+        ];
+
+        let projected = project_water_points(&route, &points, 500.0);
+        assert_eq!(projected.len(), 2);
+        assert!(projected.iter().any(|point| {
+            point.osm_type == crate::types::OsmElementType::Node && point.osm_id == 5_848_039_023
+        }));
+        assert!(projected.iter().any(|point| {
+            point.osm_type == crate::types::OsmElementType::Way && point.osm_id == 140_994_931
+        }));
+    }
+
     #[ignore = "performance regression fixture; run with --ignored --nocapture"]
     #[test]
     fn very_long_trace_projection_perf_regression() {
@@ -263,6 +299,7 @@ mod tests {
             .step_by(250)
             .enumerate()
             .map(|(index, point)| OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Node,
                 osm_id: i64::try_from(index).unwrap(),
                 lat: point.lat,
                 lon: point.lon,

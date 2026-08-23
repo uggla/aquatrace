@@ -1,6 +1,8 @@
 # AquaTrace
 
-AquaTrace analyzes GPX routes and finds nearby OpenStreetMap points tagged `amenity=drinking_water`.
+AquaTrace analyzes GPX routes and finds nearby OpenStreetMap points tagged
+`amenity=drinking_water`, including toilets tagged `amenity=toilets` with
+`drinking_water=yes`.
 The backend imports an OpenStreetMap Europe extract into SQLite and serves route analysis from local data.
 
 ## Stack
@@ -79,8 +81,9 @@ ROUTE_CACHE_TTL_SECONDS=86400
 The Europe PBF extract is large. Keep enough free disk space in the import directory for the
 download and SQLite import workspace. Docker/Compose overrides `OSM_IMPORT_DIR` to `/data/osm`.
 `OSM_IMPORT_ON_STARTUP=false` skips an optional refresh when both the local PBF and SQLite dataset
-are already usable; it never permits the API to start with either one missing. Download, PBF parsing,
-and SQLite replacement progress is logged every five seconds during an import.
+are already usable; it never permits the API to start with either one missing. Download, both PBF
+parsing passes, and SQLite replacement progress are logged every five seconds during an import.
+Eligible OSM ways are resolved to a representative point during the second pass.
 
 Completed GPX submissions are compressed as `.gpx.gz` files under `GPX_LOG_DIR/valid` or
 `GPX_LOG_DIR/error`. The backend removes files older than `GPX_LOG_RETENTION_DAYS`, then removes

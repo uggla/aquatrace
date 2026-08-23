@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::SqlitePool;
 
-use crate::types::{AnalyzeResponse, BBox, OsmWaterPoint};
+use crate::types::{AnalyzeResponse, BBox, OsmElementType, OsmWaterPoint};
 
 pub const IMPORT_STATUS_RUNNING: &str = "running";
 pub const IMPORT_STATUS_SUCCESS: &str = "success";
@@ -16,6 +16,7 @@ pub struct OsmImportStatus {
     pub finished_at: Option<DateTime<Utc>>,
     pub status: String,
     pub water_point_count: i64,
+    pub dataset_version: i64,
     pub error: Option<String>,
 }
 
@@ -77,8 +78,8 @@ pub async fn clear_route_cache(pool: &SqlitePool) -> Result<()> {
 }
 
 pub async fn water_points_in_bbox(pool: &SqlitePool, bbox: BBox) -> Result<Vec<OsmWaterPoint>> {
-    let rows = sqlx::query_as::<_, (i64, f64, f64, Option<String>)>(
-        "SELECT osm_id, lat, lon, name
+    let rows = sqlx::query_as::<_, (String, i64, f64, f64, Option<String>)>(
+        "SELECT osm_type, osm_id, lat, lon, name
          FROM water_points
          WHERE lat >= ?1 AND lat <= ?2 AND lon >= ?3 AND lon <= ?4",
     )
@@ -90,15 +91,19 @@ pub async fn water_points_in_bbox(pool: &SqlitePool, bbox: BBox) -> Result<Vec<O
     .await
     .context("failed to read water point cache")?;
 
-    Ok(rows
-        .into_iter()
-        .map(|(osm_id, lat, lon, name)| OsmWaterPoint {
-            osm_id,
-            lat,
-            lon,
-            name,
+    rows.into_iter()
+        .map(|(osm_type, osm_id, lat, lon, name)| {
+            let osm_type = OsmElementType::from_db_value(&osm_type)
+                .with_context(|| format!("invalid OSM element type in database: {osm_type}"))?;
+            Ok(OsmWaterPoint {
+                osm_type,
+                osm_id,
+                lat,
+                lon,
+                name,
+            })
         })
-        .collect())
+        .collect()
 }
 
 pub async fn has_water_points(pool: &SqlitePool) -> Result<bool> {
@@ -120,10 +125,11 @@ pub async fn latest_successful_import(pool: &SqlitePool) -> Result<Option<OsmImp
             Option<String>,
             String,
             i64,
+            i64,
             Option<String>,
         ),
     >(
-        "SELECT id, source_url, started_at, finished_at, status, water_point_count, error
+        "SELECT id, source_url, started_at, finished_at, status, water_point_count, dataset_version, error
          FROM osm_imports
          WHERE status = ?1
          ORDER BY finished_at DESC, id DESC
@@ -137,14 +143,20 @@ pub async fn latest_successful_import(pool: &SqlitePool) -> Result<Option<OsmImp
     row.map(import_status_from_row).transpose()
 }
 
-pub async fn start_import(pool: &SqlitePool, source_url: &str, now: DateTime<Utc>) -> Result<i64> {
+pub async fn start_import(
+    pool: &SqlitePool,
+    source_url: &str,
+    now: DateTime<Utc>,
+    dataset_version: i64,
+) -> Result<i64> {
     let result = sqlx::query(
-        "INSERT INTO osm_imports (source_url, started_at, status)
-         VALUES (?1, ?2, ?3)",
+        "INSERT INTO osm_imports (source_url, started_at, status, dataset_version)
+         VALUES (?1, ?2, ?3, ?4)",
     )
     .bind(source_url)
     .bind(now.to_rfc3339())
     .bind(IMPORT_STATUS_RUNNING)
+    .bind(dataset_version)
     .execute(pool)
     .await
     .context("failed to record OSM import start")?;
@@ -232,11 +244,13 @@ async fn replace_water_points_inner(
 
     sqlx::query(
         "CREATE TABLE water_points_next (
-            osm_id INTEGER PRIMARY KEY,
+            osm_type TEXT NOT NULL CHECK (osm_type IN ('node', 'way')),
+            osm_id INTEGER NOT NULL,
             lat REAL NOT NULL,
             lon REAL NOT NULL,
             name TEXT,
-            last_refresh TEXT NOT NULL
+            last_refresh TEXT NOT NULL,
+            PRIMARY KEY (osm_type, osm_id)
         )",
     )
     .execute(&mut *tx)
@@ -247,14 +261,15 @@ async fn replace_water_points_inner(
     let mut last_progress_log = std::time::Instant::now();
     for (index, point) in points.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO water_points_next (osm_id, lat, lon, name, last_refresh)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(osm_id) DO UPDATE SET
+            "INSERT INTO water_points_next (osm_type, osm_id, lat, lon, name, last_refresh)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(osm_type, osm_id) DO UPDATE SET
                 lat = excluded.lat,
                 lon = excluded.lon,
                 name = excluded.name,
                 last_refresh = excluded.last_refresh",
         )
+        .bind(point.osm_type.as_str())
         .bind(point.osm_id)
         .bind(point.lat)
         .bind(point.lon)
@@ -319,10 +334,20 @@ fn import_status_from_row(
         Option<String>,
         String,
         i64,
+        i64,
         Option<String>,
     ),
 ) -> Result<OsmImportStatus> {
-    let (id, source_url, started_at, finished_at, status, water_point_count, error) = row;
+    let (
+        id,
+        source_url,
+        started_at,
+        finished_at,
+        status,
+        water_point_count,
+        dataset_version,
+        error,
+    ) = row;
 
     Ok(OsmImportStatus {
         id,
@@ -331,6 +356,7 @@ fn import_status_from_row(
         finished_at: finished_at.as_deref().map(parse_rfc3339_utc).transpose()?,
         status,
         water_point_count,
+        dataset_version,
         error,
     })
 }
@@ -399,6 +425,7 @@ mod tests {
         replace_water_points(
             &pool,
             &[OsmWaterPoint {
+                osm_type: OsmElementType::Node,
                 osm_id: 1,
                 lat: 45.0,
                 lon: 5.0,
@@ -411,6 +438,7 @@ mod tests {
         replace_water_points(
             &pool,
             &[OsmWaterPoint {
+                osm_type: OsmElementType::Node,
                 osm_id: 2,
                 lat: 46.0,
                 lon: 6.0,
@@ -437,6 +465,95 @@ mod tests {
         assert_eq!(points[0].osm_id, 2);
         assert_eq!(points[0].name.as_deref(), Some("New"));
         assert!(has_water_points(&pool).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn node_and_way_with_same_osm_id_coexist() {
+        let pool = pool().await;
+        let points = [
+            OsmWaterPoint {
+                osm_type: OsmElementType::Node,
+                osm_id: 42,
+                lat: 45.0,
+                lon: 5.0,
+                name: Some("Node".to_owned()),
+            },
+            OsmWaterPoint {
+                osm_type: OsmElementType::Way,
+                osm_id: 42,
+                lat: 45.001,
+                lon: 5.001,
+                name: Some("Way".to_owned()),
+            },
+        ];
+
+        replace_water_points(&pool, &points, Utc::now())
+            .await
+            .unwrap();
+        let stored = water_points_in_bbox(
+            &pool,
+            BBox {
+                min_lat: 44.0,
+                min_lon: 4.0,
+                max_lat: 46.0,
+                max_lon: 6.0,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stored.len(), 2);
+        assert!(
+            stored
+                .iter()
+                .any(|point| point.osm_type == OsmElementType::Node)
+        );
+        assert!(
+            stored
+                .iter()
+                .any(|point| point.osm_type == OsmElementType::Way)
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_cached_water_points_default_to_nodes() {
+        let pool = pool().await;
+        let now = Utc::now();
+        let legacy = serde_json::json!({
+            "route": {
+                "distance_m": 1.0,
+                "elevation_gain_m": 0.0,
+                "elevation_loss_m": 0.0,
+                "points": [
+                    { "lat": 45.0, "lon": 5.0 },
+                    { "lat": 45.1, "lon": 5.1 }
+                ]
+            },
+            "water_points": [{
+                "osm_id": 7,
+                "lat": 45.0,
+                "lon": 5.0,
+                "km": 0.0,
+                "distance_to_route_m": 0.0
+            }]
+        });
+        sqlx::query(
+            "INSERT INTO routes (gpx_hash, created_at, expires_at, analysis_json)
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind("legacy")
+        .bind(now.to_rfc3339())
+        .bind((now + Duration::days(1)).to_rfc3339())
+        .bind(legacy.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let cached = get_route_cache(&pool, "legacy", now)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.water_points[0].osm_type, OsmElementType::Node);
     }
 
     #[tokio::test]
@@ -471,7 +588,7 @@ mod tests {
     async fn import_status_tracks_latest_success() {
         let pool = pool().await;
         let now = Utc::now();
-        let import_id = start_import(&pool, "https://example.test/europe.osm.pbf", now)
+        let import_id = start_import(&pool, "https://example.test/europe.osm.pbf", now, 2)
             .await
             .unwrap();
 
@@ -482,6 +599,7 @@ mod tests {
         let latest = latest_successful_import(&pool).await.unwrap().unwrap();
         assert_eq!(latest.id, import_id);
         assert_eq!(latest.water_point_count, 42);
+        assert_eq!(latest.dataset_version, 2);
         assert_eq!(latest.status, IMPORT_STATUS_SUCCESS);
     }
 }
