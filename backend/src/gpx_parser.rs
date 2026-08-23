@@ -24,8 +24,23 @@ pub fn parse_gpx_route(bytes: &[u8]) -> Result<RouteSummary> {
         }
     }
 
+    if points.is_empty() {
+        for route in gpx.routes {
+            for point in route.points {
+                let geo_point = point.point();
+                points.push(RoutePoint {
+                    lat: geo_point.y(),
+                    lon: geo_point.x(),
+                    ele: point.elevation,
+                });
+            }
+        }
+    }
+
     if points.len() < 2 {
-        return Err(anyhow!("GPX route must contain at least two track points"));
+        return Err(anyhow!(
+            "GPX route must contain at least two track or route points"
+        ));
     }
 
     Ok(summarize_route(points))
@@ -44,7 +59,7 @@ fn read_gpx_tolerating_known_export_issues(bytes: &[u8]) -> Result<gpx::Gpx, Gpx
                 normalized = Some(next);
             }
             Err(GpxError::InvalidChildElement(child, parent))
-                if parent == "gpx" && is_ignored_samsung_root_element(&child) =>
+                if is_ignored_nonstandard_element(&child, parent) =>
             {
                 let Some(next) = remove_elements(input, child.as_bytes(), |_| true) else {
                     return Err(GpxError::InvalidChildElement(child, parent));
@@ -62,8 +77,11 @@ fn remove_empty_license_elements(bytes: &[u8]) -> Option<Vec<u8>> {
     })
 }
 
-fn is_ignored_samsung_root_element(element: &str) -> bool {
-    matches!(element, "metadate" | "exerciseinfo")
+fn is_ignored_nonstandard_element(element: &str, parent: &str) -> bool {
+    matches!(
+        (parent, element),
+        ("gpx", "metadate" | "exerciseinfo") | ("metadata", "coros_edit")
+    )
 }
 
 fn remove_elements(
@@ -405,6 +423,18 @@ mod tests {
     }
 
     #[test]
+    fn accepts_coros_nonstandard_metadata_element() {
+        let fixture = include_bytes!("../tests/fixtures/coros_nonstandard_metadata_anonymized.gpx");
+        assert!(matches!(
+            gpx::read(Cursor::new(fixture)),
+            Err(GpxError::InvalidChildElement(child, "metadata")) if child == "coros_edit"
+        ));
+
+        let summary = parse_gpx_route(fixture).expect("anonymized COROS trace should parse");
+        assert_eq!(summary.points.len(), 2);
+    }
+
+    #[test]
     fn does_not_ignore_unknown_root_elements() {
         let gpx = br#"<?xml version="1.0"?>
 <gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">
@@ -436,5 +466,34 @@ mod tests {
         let summary = parse_gpx_route(gpx).unwrap();
         assert_eq!(summary.points.len(), 2);
         assert_eq!(summary.elevation_gain_m, 10.0);
+    }
+
+    #[test]
+    fn parses_route_points_when_no_track_is_present() {
+        let fixture = include_bytes!("../tests/fixtures/suunto_route_anonymized.gpx");
+        let summary = parse_gpx_route(fixture).expect("anonymized Suunto route should parse");
+
+        assert_eq!(summary.points.len(), 3);
+        assert_eq!(summary.elevation_gain_m, 20.0);
+    }
+
+    #[test]
+    fn prefers_track_points_over_route_points() {
+        let gpx = br#"<?xml version="1.0"?>
+<gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">
+  <rte>
+    <rtept lat="46.0" lon="6.0" />
+    <rtept lat="46.1" lon="6.1" />
+    <rtept lat="46.2" lon="6.2" />
+  </rte>
+  <trk><trkseg>
+    <trkpt lat="45.0" lon="5.0" />
+    <trkpt lat="45.1" lon="5.1" />
+  </trkseg></trk>
+</gpx>"#;
+
+        let summary = parse_gpx_route(gpx).unwrap();
+        assert_eq!(summary.points.len(), 2);
+        assert_eq!(summary.points[0].lat, 45.0);
     }
 }

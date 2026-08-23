@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1"
+     xmlns:gpxdata="http://www.cluetrust.com/XML/GPXDATA/1/0"
+     creator="COROS Wearables"
+     version="1.1">
+  <metadata>
+    <link href="https://www.coros.com"><text>COROS</text></link>
+    <time>2026-01-01T08:00:00Z</time>
+    <coros_edit>1</coros_edit>
+  </metadata>
+  <trk>
+    <name>Anonymized activity</name>
+    <type>running</type>
+    <trkseg>
+      <trkpt lat="45.000000" lon="5.000000"><ele>100</ele></trkpt>
+      <trkpt lat="45.001000" lon="5.001000"><ele>120</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>
