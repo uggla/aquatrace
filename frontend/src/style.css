@@ -948,6 +948,11 @@ body {
   height: 1.15rem;
 }
 
+.logo.inline.rust-logo {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+
 .github-link {
   display: inline-flex;
   gap: 6px;
