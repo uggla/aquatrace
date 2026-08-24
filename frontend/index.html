@@ -174,6 +174,19 @@
           >
             <span aria-hidden="true"></span>
           </button>
+          <button
+            id="reset-view-button"
+            class="reset-view-button"
+            type="button"
+            aria-label="Fit the entire route on the map"
+            title="Fit route to map"
+            disabled
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"></path>
+              <path d="m4 9 5-5m6 0 5 5M4 15l5 5m6 0 5-5"></path>
+            </svg>
+          </button>
           <div id="map" class="route-map" aria-label="Route map"></div>
           <div id="map-empty" class="map-empty">
             <strong>No route loaded</strong>
@@ -199,11 +212,33 @@
                   <th>Km</th>
                   <th>Offset</th>
                   <th>Name</th>
+                  <th>Coordinates</th>
+                  <th>
+                    <span class="street-view-header">
+                      Street View
+                      <button
+                        class="info-tooltip-trigger"
+                        type="button"
+                        aria-label="About Street View availability"
+                        aria-describedby="street-view-tooltip"
+                      >
+                        <svg viewBox="0 0 20 20" aria-hidden="true">
+                          <circle cx="10" cy="10" r="8"></circle>
+                          <path d="M10 9v5"></path>
+                          <circle cx="10" cy="6" r="0.8"></circle>
+                        </svg>
+                        <span id="street-view-tooltip" class="info-tooltip" role="tooltip">
+                          If no icon is shown, no Street View data was returned for that point. If no icons are shown
+                          at all, Street View may be unavailable or the API quota may have been exceeded.
+                        </span>
+                      </button>
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody id="water-table">
                 <tr>
-                  <td colspan="3">No route analyzed yet.</td>
+                  <td colspan="5">No route analyzed yet.</td>
                 </tr>
               </tbody>
             </table>

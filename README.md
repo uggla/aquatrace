@@ -76,7 +76,13 @@ OSM_IMPORT_INTERVAL_SECONDS=1296000
 OSM_IMPORT_DIR=data/osm
 OSM_IMPORT_ON_STARTUP=true
 ROUTE_CACHE_TTL_SECONDS=86400
+GOOGLE_MAPS_API_KEY=
 ```
+
+`GOOGLE_MAPS_API_KEY` is optional. When set, the frontend asks the backend for confirmed Google
+Street View links after displaying the route analysis. Enable the Street View Static API for the
+Google Cloud project and restrict the key to that API and, in production, to the backend server IP.
+Metadata lookups use a 500 ms timeout and never block or change the GPX analysis response.
 
 The Europe PBF extract is large. Keep enough free disk space in the import directory for the
 download and SQLite import workspace. Docker/Compose overrides `OSM_IMPORT_DIR` to `/data/osm`.
@@ -105,6 +111,24 @@ file=<route.gpx>
 ```
 
 The response includes route metrics, route points for map display, and drinking water points sorted by kilometer.
+
+Street View availability can be requested separately after an analysis:
+
+```http
+POST /api/street-view
+Content-Type: application/json
+```
+
+```json
+{
+  "locations": [
+    { "id": "node:123", "lat": 45.123456, "lon": 5.123456 }
+  ]
+}
+```
+
+The response preserves the identifiers and input order. A `street_view_url` property is included
+only when Google confirms a panorama within 50 metres. A request accepts at most 2,000 locations.
 
 ## Tests
 

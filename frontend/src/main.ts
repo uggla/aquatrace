@@ -26,11 +26,19 @@ type WaterPoint = {
   lon: number;
   km: number;
   distance_to_route_m: number;
+  street_view_url?: string;
 };
 
 type AnalyzeResponse = {
   route: RouteSummary;
   water_points: WaterPoint[];
+};
+
+type StreetViewResponse = {
+  locations: Array<{
+    id: string;
+    street_view_url?: string;
+  }>;
 };
 
 type MapStyle = 'opentopo' | 'openstreetmap';
@@ -68,6 +76,7 @@ const fileSummary = mustQuery<HTMLParagraphElement>('#file-summary');
 const mapEmpty = mustQuery<HTMLDivElement>('#map-empty');
 const mapShell = mustQuery<HTMLDivElement>('.map-shell');
 const fullscreenButton = mustQuery<HTMLButtonElement>('#fullscreen-button');
+const resetViewButton = mustQuery<HTMLButtonElement>('#reset-view-button');
 const mapStyleSelect = mustQuery<HTMLSelectElement>('#map-style');
 const elevationProfile = mustQuery<HTMLDivElement>('#elevation-profile');
 const waterTable = mustQuery<HTMLTableSectionElement>('#water-table');
@@ -79,6 +88,7 @@ let selectedWaterPointKey: string | null = null;
 let routeLayer: L.Polyline | null = null;
 let markerLayer = L.layerGroup();
 let currentTileLayer = createTileLayer('opentopo');
+let streetViewController: AbortController | null = null;
 
 const map = L.map('map', {
   scrollWheelZoom: true,
@@ -97,6 +107,10 @@ mapStyleSelect.addEventListener('change', () => {
 
 fullscreenButton.addEventListener('click', () => {
   void toggleFullscreen();
+});
+
+resetViewButton.addEventListener('click', () => {
+  fitMapToAnalysis();
 });
 
 document.addEventListener('fullscreenchange', () => {
@@ -139,6 +153,9 @@ async function analyzeFile(file: File, source: 'upload' | 'example'): Promise<vo
   const formData = new FormData();
   formData.append('file', file);
 
+  streetViewController?.abort();
+  streetViewController = null;
+
   setLoading(true, source);
   fileSummary.textContent = `${file.name} - ${formatFileSize(file.size)}`;
   setStatus('Analyzing route with local OpenStreetMap data...', 'neutral');
@@ -154,15 +171,70 @@ async function analyzeFile(file: File, source: 'upload' | 'example'): Promise<vo
       throw new Error(error.error ?? `HTTP ${response.status}`);
     }
 
-    currentAnalysis = (await response.json()) as AnalyzeResponse;
+    const analysis = (await response.json()) as AnalyzeResponse;
+    currentAnalysis = analysis;
     selectedWaterPointKey = null;
     renderAnalysis();
     setStatus('', 'neutral');
+    void loadStreetViewLinks(analysis);
   } catch (error) {
     console.error(error);
     setStatus(error instanceof Error ? readableError(error.message) : 'The route could not be analyzed.', 'error');
   } finally {
     setLoading(false);
+  }
+}
+
+async function loadStreetViewLinks(analysis: AnalyzeResponse): Promise<void> {
+  if (analysis.water_points.length === 0) {
+    return;
+  }
+
+  const controller = new AbortController();
+  streetViewController = controller;
+
+  try {
+    const response = await fetch('/api/street-view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        locations: analysis.water_points.map((point) => ({
+          id: waterPointKey(point),
+          lat: point.lat,
+          lon: point.lon
+        }))
+      }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      return;
+    }
+
+    const result = (await response.json()) as StreetViewResponse;
+    if (controller.signal.aborted || currentAnalysis !== analysis) {
+      return;
+    }
+
+    const links = new Map(
+      result.locations
+        .filter((location) => location.street_view_url !== undefined)
+        .map((location) => [location.id, location.street_view_url as string])
+    );
+    for (const point of analysis.water_points) {
+      point.street_view_url = links.get(waterPointKey(point));
+    }
+    renderTable(
+      analysis.water_points.filter((point) => point.distance_to_route_m <= selectedDistance)
+    );
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      console.warn('Street View lookup failed.');
+    }
+  } finally {
+    if (streetViewController === controller) {
+      streetViewController = null;
+    }
   }
 }
 
@@ -189,13 +261,13 @@ async function analyzeExample(): Promise<void> {
   }
 }
 
-function renderAnalysis(): void {
+function renderAnalysis(preserveMapView = false): void {
   if (!currentAnalysis) {
     return;
   }
 
   renderMetrics(currentAnalysis.route);
-  renderMap(currentAnalysis);
+  renderMap(currentAnalysis, preserveMapView);
   const visibleWaterPoints = currentAnalysis.water_points.filter(
     (point) => point.distance_to_route_m <= selectedDistance
   );
@@ -220,7 +292,7 @@ function renderMetrics(route: RouteSummary): void {
       : '-';
 }
 
-function renderMap(analysis: AnalyzeResponse): void {
+function renderMap(analysis: AnalyzeResponse, preserveMapView: boolean): void {
   const coordinates = analysis.route.points.map((point) => L.latLng(point.lat, point.lon));
   const visibleWaterPoints = analysis.water_points.filter(
     (point) => point.distance_to_route_m <= selectedDistance
@@ -239,6 +311,7 @@ function renderMap(analysis: AnalyzeResponse): void {
     lineCap: 'round',
     lineJoin: 'round'
   }).addTo(map);
+  resetViewButton.disabled = false;
 
   for (const point of visibleWaterPoints) {
     const pointKey = waterPointKey(point);
@@ -253,9 +326,21 @@ function renderMap(analysis: AnalyzeResponse): void {
       .addTo(markerLayer);
   }
 
+  if (!preserveMapView) {
+    fitMapToAnalysis();
+  }
+}
+
+function fitMapToAnalysis(): void {
+  if (!currentAnalysis || !routeLayer) {
+    return;
+  }
+
   const bounds = routeLayer.getBounds();
-  for (const point of visibleWaterPoints) {
-    bounds.extend([point.lat, point.lon]);
+  for (const point of currentAnalysis.water_points) {
+    if (point.distance_to_route_m <= selectedDistance) {
+      bounds.extend([point.lat, point.lon]);
+    }
   }
   map.fitBounds(bounds.pad(0.12), { maxZoom: 15 });
 }
@@ -263,7 +348,7 @@ function renderMap(analysis: AnalyzeResponse): void {
 function renderTable(points: WaterPoint[]): void {
   if (points.length === 0) {
     waterTable.innerHTML =
-      '<tr><td colspan="3" class="empty-cell">No drinking water found in this distance range.</td></tr>';
+      '<tr><td colspan="5" class="empty-cell">No drinking water found in this distance range.</td></tr>';
     return;
   }
 
@@ -276,19 +361,91 @@ function renderTable(points: WaterPoint[]): void {
           <span>${escapeHtml(point.name ?? 'Water Point')}</span>
           <small>OSM ${point.osm_id}</small>
         </td>
+        <td>
+          <span class="coordinates-cell">
+            <span class="coordinates">${formatCoordinates(point)}</span>
+            <button class="copy-coordinates" type="button" data-coordinates="${formatCoordinates(
+              point
+            )}" title="Copy coordinates" aria-label="Copy coordinates">
+              <svg class="copy-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="8" y="8" width="11" height="12" rx="2"></rect>
+                <path d="M16 8V6a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h1"></path>
+              </svg>
+              <svg class="copy-success-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m5 12 4 4L19 6"></path>
+              </svg>
+            </button>
+          </span>
+        </td>
+        <td>${streetViewLink(point)}</td>
       </tr>`
     )
     .join('');
 
   for (const row of waterTable.querySelectorAll<HTMLTableRowElement>('tr[data-osm-key]')) {
-    row.addEventListener('click', () => selectWaterPoint(row.dataset.osmKey ?? ''));
+    row.addEventListener('click', (event) => {
+      if (event.target instanceof Element && event.target.closest('a, button')) {
+        return;
+      }
+      selectWaterPoint(row.dataset.osmKey ?? '');
+    });
     row.addEventListener('keydown', (event) => {
+      if (event.target !== row) {
+        return;
+      }
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
         selectWaterPoint(row.dataset.osmKey ?? '');
       }
     });
+
+    const copyButton = row.querySelector<HTMLButtonElement>('.copy-coordinates');
+    copyButton?.addEventListener('click', () => {
+      void copyCoordinates(copyButton);
+    });
   }
+}
+
+async function copyCoordinates(button: HTMLButtonElement): Promise<void> {
+  const coordinates = button.dataset.coordinates;
+  if (!coordinates) {
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(coordinates);
+    button.classList.add('copied');
+    button.title = 'Coordinates copied';
+    button.setAttribute('aria-label', 'Coordinates copied');
+    window.setTimeout(() => {
+      button.classList.remove('copied');
+      button.title = 'Copy coordinates';
+      button.setAttribute('aria-label', 'Copy coordinates');
+    }, 1500);
+  } catch (error) {
+    console.warn('Coordinates could not be copied.');
+  }
+}
+
+function formatCoordinates(point: WaterPoint): string {
+  return `${point.lat.toFixed(6)}, ${point.lon.toFixed(6)}`;
+}
+
+function streetViewLink(point: WaterPoint): string {
+  if (!point.street_view_url) {
+    return '';
+  }
+
+  return `<a class="street-view-link" href="${escapeHtml(
+    point.street_view_url
+  )}" target="_blank" rel="noopener noreferrer" title="Open Street View" aria-label="Open Street View near ${escapeHtml(
+    point.name ?? 'water point'
+  )}">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 8.5h3.2L9 6h6l1.8 2.5H20v10H4z"></path>
+      <circle cx="12" cy="13.5" r="3.5"></circle>
+    </svg>
+  </a>`;
 }
 
 function renderElevationProfile(route: RouteSummary, waterPoints: WaterPoint[]): void {
@@ -503,7 +660,7 @@ function waterPointKey(point: WaterPoint): string {
 
 function selectWaterPoint(pointKey: string): void {
   selectedWaterPointKey = selectedWaterPointKey === pointKey ? null : pointKey;
-  renderAnalysis();
+  renderAnalysis(true);
 }
 
 function waterIcon(selected: boolean): L.DivIcon {

@@ -272,9 +272,9 @@ body {
   box-shadow: var(--aquatrace-shadow);
 }
 
-.fullscreen-button {
+.fullscreen-button,
+.reset-view-button {
   position: absolute;
-  top: 86px;
   right: 10px;
   z-index: 700;
   display: flex;
@@ -290,9 +290,34 @@ body {
   box-shadow: 0 1px 5px rgb(0 0 0 / 0.35);
 }
 
+.fullscreen-button {
+  top: 86px;
+}
+
+.reset-view-button {
+  top: 130px;
+}
+
 .fullscreen-button:hover,
-.fullscreen-button:focus {
+.fullscreen-button:focus,
+.reset-view-button:hover,
+.reset-view-button:focus {
   background: #f4f4f4;
+}
+
+.reset-view-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.reset-view-button svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: #111;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .fullscreen-button span {
@@ -560,6 +585,7 @@ body {
 }
 
 .table-wrap table {
+  min-width: 860px;
   margin: 0;
   color: var(--aquatrace-ink);
 }
@@ -589,19 +615,19 @@ body {
   background: white;
 }
 
-.table-wrap tbody tr[data-osm-id] {
+.table-wrap tbody tr[data-osm-key] {
   cursor: pointer;
 }
 
-.table-wrap tbody tr[data-osm-id]:hover {
+.table-wrap tbody tr[data-osm-key]:hover {
   background: #edf7fb;
 }
 
-.table-wrap tbody tr[data-osm-id]:hover td {
+.table-wrap tbody tr[data-osm-key]:hover td {
   background: #edf7fb;
 }
 
-.table-wrap tbody tr[data-osm-id]:focus-visible {
+.table-wrap tbody tr[data-osm-key]:focus-visible {
   outline: 3px solid rgb(16 107 163 / 0.28);
   outline-offset: -3px;
 }
@@ -635,6 +661,169 @@ body {
   color: #48606f;
   font-size: 0.75rem;
   font-weight: 600;
+}
+
+.coordinates {
+  color: #48606f;
+  font-variant-numeric: tabular-nums;
+}
+
+.coordinates-cell {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.copy-coordinates {
+  display: inline-flex;
+  width: 30px;
+  min-width: 0;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--aquatrace-blue);
+  box-shadow: none;
+}
+
+.copy-coordinates:hover,
+.copy-coordinates:focus-visible {
+  background: #dceff7;
+  color: var(--aquatrace-blue-dark);
+  box-shadow: none;
+}
+
+.copy-coordinates svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.copy-success-icon {
+  display: none;
+}
+
+.copy-coordinates.copied {
+  background: #e9f3d8;
+  color: #31520f;
+}
+
+.copy-coordinates.copied .copy-icon {
+  display: none;
+}
+
+.copy-coordinates.copied .copy-success-icon {
+  display: block;
+}
+
+.street-view-link {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--aquatrace-blue);
+}
+
+.street-view-link:hover,
+.street-view-link:focus-visible {
+  background: #dceff7;
+  color: var(--aquatrace-blue-dark);
+}
+
+.street-view-link svg {
+  width: 25px;
+  height: 25px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.street-view-header {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.info-tooltip-trigger {
+  position: relative;
+  display: inline-flex;
+  width: 22px;
+  min-width: 0;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--aquatrace-blue-dark);
+  cursor: help;
+  box-shadow: none;
+}
+
+.info-tooltip-trigger:hover,
+.info-tooltip-trigger:focus-visible {
+  background: #d7eaf1;
+  color: var(--aquatrace-blue-dark);
+  box-shadow: none;
+}
+
+.info-tooltip-trigger > svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-width: 1.7;
+}
+
+.info-tooltip-trigger > svg circle:last-child {
+  fill: currentcolor;
+  stroke: none;
+}
+
+.info-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: min(320px, 75vw);
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #173746;
+  color: white;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-3px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+  visibility: hidden;
+}
+
+.info-tooltip-trigger:hover .info-tooltip,
+.info-tooltip-trigger:focus-visible .info-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
 }
 
 .offset-pill {

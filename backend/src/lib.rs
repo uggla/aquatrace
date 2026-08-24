@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
@@ -16,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{Duration, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -30,12 +31,14 @@ pub mod gpx_parser;
 pub mod hash;
 pub mod osm_import;
 pub mod store;
+pub mod street_view;
 pub mod types;
 
 use geometry::project_water_points;
 use gpx_archive::{ArchiveCategory, GpxArchive, safe_filename, submission_id};
 use gpx_parser::parse_gpx_route;
 use hash::sha256_hex;
+use street_view::{Coordinates, LookupStatus, StreetViewService};
 use types::{AnalyzeResponse, BBox};
 
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
@@ -46,12 +49,14 @@ const DEFAULT_GPX_LOG_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const DEFAULT_OSM_PBF_URL: &str = "https://download.geofabrik.de/europe-latest.osm.pbf";
 const DEFAULT_OSM_IMPORT_INTERVAL_SECONDS: i64 = 1_296_000;
 const DEFAULT_OSM_IMPORT_DIR: &str = "data/osm";
+const MAX_STREET_VIEW_LOCATIONS: usize = 2_000;
 
 #[derive(Clone)]
 pub struct AppState {
     pool: SqlitePool,
     config: Arc<Config>,
     gpx_archive: GpxArchive,
+    street_view: StreetViewService,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +73,7 @@ pub struct Config {
     pub osm_import_dir: PathBuf,
     pub osm_import_on_startup: bool,
     pub route_cache_ttl: Duration,
+    pub google_maps_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -79,6 +85,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/analyze", post(analyze))
+        .route("/api/street-view", post(street_view))
         .layer(DefaultBodyLimit::max(state.config.max_upload_bytes))
         .route_layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -150,6 +157,7 @@ pub async fn app_state_with_options(config: Config, options: StartupOptions) -> 
 
     let state = AppState {
         pool,
+        street_view: StreetViewService::new(config.google_maps_api_key.clone()),
         config: Arc::new(config),
         gpx_archive,
     };
@@ -164,6 +172,102 @@ pub async fn app_state_with_options(config: Config, options: StartupOptions) -> 
 
 async fn health() -> &'static str {
     "ok"
+}
+
+#[derive(Deserialize)]
+struct StreetViewRequest {
+    locations: Vec<StreetViewLocationRequest>,
+}
+
+#[derive(Deserialize)]
+struct StreetViewLocationRequest {
+    id: String,
+    lat: f64,
+    lon: f64,
+}
+
+#[derive(Serialize)]
+struct StreetViewResponse {
+    locations: Vec<StreetViewLocationResponse>,
+}
+
+#[derive(Serialize)]
+struct StreetViewLocationResponse {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    street_view_url: Option<String>,
+}
+
+async fn street_view(
+    State(state): State<AppState>,
+    Json(request): Json<StreetViewRequest>,
+) -> ApiResult<Json<StreetViewResponse>> {
+    let started_at = Instant::now();
+    if !state.street_view.is_enabled() {
+        return Err(ApiError::service_unavailable("street_view_unavailable"));
+    }
+    if request.locations.len() > MAX_STREET_VIEW_LOCATIONS {
+        return Err(ApiError::payload_too_large());
+    }
+
+    let mut identifiers = HashSet::with_capacity(request.locations.len());
+    let mut coordinates = Vec::with_capacity(request.locations.len());
+    for location in &request.locations {
+        if location.id.is_empty()
+            || location.id.len() > 128
+            || !identifiers.insert(location.id.as_str())
+        {
+            return Err(ApiError::bad_request(anyhow::anyhow!(
+                "Street View location ids must be unique and contain between 1 and 128 bytes"
+            )));
+        }
+        let point = Coordinates {
+            lat: location.lat,
+            lon: location.lon,
+        };
+        if !point.is_valid() {
+            return Err(ApiError::bad_request(anyhow::anyhow!(
+                "invalid Street View coordinates for {}",
+                location.id
+            )));
+        }
+        coordinates.push(point);
+    }
+
+    let results = state.street_view.lookup_many(&coordinates).await;
+    let mut found = 0;
+    let mut not_found = 0;
+    let mut timeouts = 0;
+    let mut errors = 0;
+    for result in &results {
+        match result.status {
+            LookupStatus::Found => found += 1,
+            LookupStatus::NotFound => not_found += 1,
+            LookupStatus::Timeout => timeouts += 1,
+            LookupStatus::Error => errors += 1,
+        }
+    }
+    info!(
+        location_count = request.locations.len(),
+        found,
+        not_found,
+        timeouts,
+        errors,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "completed Street View lookup"
+    );
+
+    let locations = request
+        .locations
+        .into_iter()
+        .zip(results)
+        .map(|(location, result)| StreetViewLocationResponse {
+            id: location.id,
+            street_view_url: result.url,
+        })
+        .collect();
+
+    Ok(Json(StreetViewResponse { locations }))
 }
 
 async fn analyze(
@@ -388,6 +492,9 @@ impl Config {
             osm_import_dir,
             osm_import_on_startup: parse_bool_env("OSM_IMPORT_ON_STARTUP", true)?,
             route_cache_ttl: Duration::seconds(parse_i64_env("ROUTE_CACHE_TTL_SECONDS", 86_400)?),
+            google_maps_api_key: std::env::var("GOOGLE_MAPS_API_KEY")
+                .ok()
+                .and_then(|key| (!key.trim().is_empty()).then_some(key)),
         })
     }
 }
@@ -465,6 +572,14 @@ impl ApiError {
             source: None,
         }
     }
+
+    fn service_unavailable(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code,
+            source: None,
+        }
+    }
 }
 
 impl<E> From<E> for ApiError
@@ -520,6 +635,13 @@ mod tests {
 </gpx>"#;
 
     async fn test_app(points: Vec<OsmWaterPoint>) -> (Router, TempDir) {
+        test_app_with_street_view(points, StreetViewService::new(None)).await
+    }
+
+    async fn test_app_with_street_view(
+        points: Vec<OsmWaterPoint>,
+        street_view: StreetViewService,
+    ) -> (Router, TempDir) {
         let temp = TempDir::new().unwrap();
         let database_url = format!("sqlite:{}/aquatrace.db", temp.path().display());
         let config = Config {
@@ -535,6 +657,7 @@ mod tests {
             osm_import_dir: temp.path().join("osm"),
             osm_import_on_startup: false,
             route_cache_ttl: Duration::days(1),
+            google_maps_api_key: None,
         };
         let pool = connect_database(&config.database_url).await.unwrap();
         store::replace_water_points(&pool, &points, Utc::now())
@@ -548,6 +671,7 @@ mod tests {
         gpx_archive.prepare().await.unwrap();
         let state = AppState {
             pool,
+            street_view,
             config: Arc::new(config),
             gpx_archive,
         };
@@ -655,5 +779,79 @@ mod tests {
 
         let response = app.oneshot(multipart_request(GPX)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn street_view_is_unavailable_without_api_key() {
+        let (app, _) = test_app(vec![]).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/street-view")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"locations":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response_json(response).await["error"],
+            "street_view_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn street_view_returns_links_and_preserves_location_order() {
+        use std::collections::HashMap;
+
+        use axum::{extract::Query, routing::get};
+
+        let google = Router::new().route(
+            "/metadata",
+            get(|Query(query): Query<HashMap<String, String>>| async move {
+                if query.get("location").map(String::as_str) == Some("45.000000,5.000000") {
+                    Json(serde_json::json!({
+                        "status": "OK",
+                        "location": { "lat": 45.000100, "lng": 5.000100 }
+                    }))
+                } else {
+                    Json(serde_json::json!({ "status": "ZERO_RESULTS" }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, google).await.unwrap() });
+        let service = StreetViewService::new_for_test(
+            Some("secret".to_owned()),
+            &format!("http://{address}/metadata"),
+        );
+        let (app, _) = test_app_with_street_view(vec![], service).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/street-view")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"locations":[{"id":"node:1","lat":45.0,"lon":5.0},{"id":"way:2","lat":46.0,"lon":6.0}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = response_json(response).await;
+        assert_eq!(json["locations"][0]["id"], "node:1");
+        assert_eq!(
+            json["locations"][0]["street_view_url"],
+            "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=45.000100,5.000100"
+        );
+        assert_eq!(json["locations"][1]["id"], "way:2");
+        assert!(json["locations"][1].get("street_view_url").is_none());
     }
 }

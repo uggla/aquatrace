@@ -25,6 +25,7 @@ services:
       OSM_IMPORT_DIR: /data/osm
       OSM_IMPORT_ON_STARTUP: "true"
       ROUTE_CACHE_TTL_SECONDS: "86400"
+      GOOGLE_MAPS_API_KEY: "${GOOGLE_MAPS_API_KEY:-}"
       RUST_LOG: aquatrace_backend=info,tower_http=info
     expose:
       - "3000"
