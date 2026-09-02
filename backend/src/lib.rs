@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Multipart, State},
+    extract::{DefaultBodyLimit, Multipart, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -34,12 +34,12 @@ pub mod store;
 pub mod street_view;
 pub mod types;
 
-use geometry::project_water_points;
+use geometry::{nearby_water_points, project_water_points};
 use gpx_archive::{ArchiveCategory, GpxArchive, safe_filename, submission_id};
 use gpx_parser::parse_gpx_route;
 use hash::sha256_hex;
 use street_view::{Coordinates, LookupStatus, StreetViewService};
-use types::{AnalyzeResponse, BBox};
+use types::{AnalyzeResponse, BBox, NearbyResponse, PlaceSearchResult, RoutePoint};
 
 const DEFAULT_MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_ANALYSIS_DISTANCE_M: f64 = 500.0;
@@ -50,6 +50,8 @@ const DEFAULT_OSM_PBF_URL: &str = "https://download.geofabrik.de/europe-latest.o
 const DEFAULT_OSM_IMPORT_INTERVAL_SECONDS: i64 = 1_296_000;
 const DEFAULT_OSM_IMPORT_DIR: &str = "data/osm";
 const MAX_STREET_VIEW_LOCATIONS: usize = 2_000;
+const MAX_NEARBY_WATER_POINTS: usize = 2_000;
+const MAX_PLACE_RESULTS: usize = 10;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -85,6 +87,8 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/analyze", post(analyze))
+        .route("/api/places/search", get(search_places))
+        .route("/api/water-points/nearby", get(nearby))
         .route("/api/street-view", post(street_view))
         .layer(DefaultBodyLimit::max(state.config.max_upload_bytes))
         .route_layer(TraceLayer::new_for_http())
@@ -172,6 +176,87 @@ pub async fn app_state_with_options(config: Config, options: StartupOptions) -> 
 
 async fn health() -> &'static str {
     "ok"
+}
+
+#[derive(Deserialize)]
+struct PlaceSearchQuery {
+    q: String,
+}
+
+#[derive(Serialize)]
+struct PlaceSearchResponse {
+    places: Vec<PlaceSearchResult>,
+}
+
+async fn search_places(
+    State(state): State<AppState>,
+    Query(query): Query<PlaceSearchQuery>,
+) -> ApiResult<Json<PlaceSearchResponse>> {
+    let query = query.q.trim();
+    let character_count = query.chars().count();
+    if !(3..=100).contains(&character_count) {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "place query must contain between 3 and 100 characters"
+        )));
+    }
+    let places = store::search_places(&state.pool, query, MAX_PLACE_RESULTS).await?;
+    Ok(Json(PlaceSearchResponse { places }))
+}
+
+#[derive(Deserialize)]
+struct NearbyQuery {
+    lat: f64,
+    lon: f64,
+    radius_m: u32,
+}
+
+async fn nearby(
+    State(state): State<AppState>,
+    Query(query): Query<NearbyQuery>,
+) -> ApiResult<Json<NearbyResponse>> {
+    let started_at = Instant::now();
+    let center = RoutePoint {
+        lat: query.lat,
+        lon: query.lon,
+        ele: None,
+    };
+    if !query.lat.is_finite()
+        || !query.lon.is_finite()
+        || !(-90.0..=90.0).contains(&query.lat)
+        || !(-180.0..=180.0).contains(&query.lon)
+        || !matches!(query.radius_m, 500 | 1_000 | 5_000 | 20_000)
+    {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "invalid nearby coordinates or radius"
+        )));
+    }
+    let bbox = BBox::from_points(&[center])
+        .expect("a single valid point always has a bounding box")
+        .expand_meters(f64::from(query.radius_m));
+    let candidates = store::water_points_in_bbox(&state.pool, bbox).await?;
+    let candidate_count = candidates.len();
+    let (water_points, truncated) = nearby_water_points(
+        center,
+        &candidates,
+        f64::from(query.radius_m),
+        MAX_NEARBY_WATER_POINTS,
+    );
+    info!(
+        lat = query.lat,
+        lon = query.lon,
+        radius_m = query.radius_m,
+        candidate_count,
+        water_point_count = water_points.len(),
+        truncated,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "completed nearby water point search"
+    );
+    Ok(Json(NearbyResponse {
+        center,
+        radius_m: query.radius_m,
+        water_points,
+        truncated,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -624,7 +709,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::types::OsmWaterPoint;
+    use crate::types::{OsmPlace, OsmWaterPoint};
 
     const GPX: &str = r#"<?xml version="1.0"?>
 <gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">
@@ -747,6 +832,91 @@ mod tests {
         let second = app.oneshot(multipart_request(GPX)).await.unwrap();
         assert_eq!(second.status(), StatusCode::OK);
         assert_eq!(archive_files(&temp, "valid").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn searches_places_through_the_fts_api() {
+        let (app, temp) = test_app(vec![]).await;
+        let database_url = format!("sqlite:{}/aquatrace.db", temp.path().display());
+        let pool = connect_database(&database_url).await.unwrap();
+        store::replace_osm_dataset_for_import(
+            &pool,
+            &[],
+            &[OsmPlace {
+                osm_id: 10,
+                name: "Échirolles".to_owned(),
+                place_type: "town".to_owned(),
+                lat: 45.14,
+                lon: 5.71,
+                search_text: "Échirolles Echirolles".to_owned(),
+            }],
+            Utc::now(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/places/search?q=echi")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = response_json(response).await;
+        assert_eq!(json["places"][0]["name"], "Échirolles");
+        assert_eq!(json["places"][0]["place_type"], "town");
+    }
+
+    #[tokio::test]
+    async fn nearby_api_filters_by_exact_radius_and_validates_radius() {
+        let (app, _) = test_app(vec![
+            OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Node,
+                osm_id: 1,
+                lat: 45.001,
+                lon: 5.0,
+                name: Some("Near".to_owned()),
+            },
+            OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Node,
+                osm_id: 2,
+                lat: 45.02,
+                lon: 5.0,
+                name: Some("Far".to_owned()),
+            },
+        ])
+        .await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/water-points/nearby?lat=45&lon=5&radius_m=1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = response_json(response).await;
+        assert_eq!(json["water_points"].as_array().unwrap().len(), 1);
+        assert_eq!(json["water_points"][0]["name"], "Near");
+        assert_eq!(json["radius_m"], 1_000);
+        assert_eq!(json["truncated"], false);
+
+        let invalid = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/water-points/nearby?lat=45&lon=5&radius_m=123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

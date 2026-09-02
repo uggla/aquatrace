@@ -71,6 +71,48 @@ body {
   color: var(--aquatrace-muted);
 }
 
+.feature-nav {
+  margin-bottom: 18px;
+  padding: 6px;
+  border: 1px solid var(--aquatrace-border);
+  border-radius: 8px;
+  background: white;
+  box-shadow: var(--aquatrace-shadow);
+}
+
+.feature-nav [role='tablist'] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.feature-nav a {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  border-radius: 6px;
+  color: var(--aquatrace-ink);
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+}
+
+.feature-nav a:hover,
+.feature-nav a:focus-visible {
+  background: #eaf4f8;
+}
+
+.feature-nav a.active {
+  background: var(--aquatrace-blue);
+  color: white;
+}
+
+[data-view-panel][hidden] {
+  display: none;
+}
+
 .controls-band {
   display: grid;
   grid-template-columns: minmax(280px, 720px);
@@ -92,6 +134,77 @@ body {
 .upload-form {
   display: grid;
   gap: 10px;
+}
+
+.place-search {
+  display: grid;
+  max-width: 720px;
+  gap: 8px;
+}
+
+.place-search > label {
+  font-weight: 600;
+}
+
+.place-search > small {
+  color: var(--aquatrace-muted);
+}
+
+.place-search-box {
+  position: relative;
+}
+
+.place-search-box input {
+  margin: 0;
+  border-color: var(--aquatrace-border);
+  background-color: white;
+  color: var(--aquatrace-ink);
+  color-scheme: light;
+}
+
+.place-search-box input::placeholder {
+  color: var(--aquatrace-muted);
+  opacity: 1;
+}
+
+.place-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  z-index: 1000;
+  max-height: 320px;
+  padding: 5px;
+  margin: 0;
+  overflow-y: auto;
+  border: 1px solid var(--aquatrace-border);
+  border-radius: 7px;
+  background: white;
+  box-shadow: 0 12px 30px rgb(38 70 83 / 0.2);
+  list-style: none;
+}
+
+.place-suggestions li {
+  display: grid;
+  gap: 2px;
+  padding: 9px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.place-suggestions li.active,
+.place-suggestions li:hover {
+  background: #eaf4f8;
+}
+
+.place-suggestions li span,
+.place-suggestion-empty {
+  color: var(--aquatrace-muted);
+  font-size: 0.82rem;
+}
+
+.place-suggestions .place-suggestion-empty {
+  cursor: default;
 }
 
 .upload-row {
@@ -590,6 +703,14 @@ body {
   color: var(--aquatrace-ink);
 }
 
+.nearby-table-wrap table {
+  min-width: 720px;
+}
+
+.nearby-table-wrap td:nth-child(2) {
+  white-space: normal;
+}
+
 .table-wrap thead th {
   position: sticky;
   top: 0;
@@ -1006,6 +1127,10 @@ body {
 
   .segmented {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .feature-nav [role='tablist'] {
+    grid-template-columns: 1fr;
   }
 
   .results-header {

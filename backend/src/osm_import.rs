@@ -24,13 +24,13 @@ use tracing::{error, info, warn};
 
 use crate::{
     Config, store,
-    types::{OsmElementType, OsmWaterPoint, RoutePoint},
+    types::{OsmElementType, OsmPlace, OsmWaterPoint, RoutePoint},
 };
 
 const IMPORT_POLL_SECONDS: u64 = 3_600;
 const PROGRESS_LOG_SECONDS: u64 = 5;
 const PBF_FILE_NAME: &str = "europe-latest.osm.pbf";
-const DATASET_VERSION: i64 = 2;
+const DATASET_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalPbfState {
@@ -79,8 +79,9 @@ pub async fn prepare_initial_data(
     let pbf_path = config.osm_import_dir.join(PBF_FILE_NAME);
     let pbf_state = local_pbf_state(&pbf_path, config).await?;
     let has_water_points = store::has_water_points(pool).await?;
+    let has_places = store::has_places(pool).await?;
     let latest_import = store::latest_successful_import(pool).await?;
-    let database_is_usable = has_water_points && latest_import.is_some();
+    let database_is_usable = has_water_points && has_places && latest_import.is_some();
 
     let action = startup_action(
         pbf_state,
@@ -219,22 +220,31 @@ async fn run_import_inner(
         pbf_path = %pbf_path.display(),
         "parsing OSM PBF dump"
     );
-    let points = parse_drinking_water_points(pbf_path, import_id)
+    let dataset = parse_osm_dataset(pbf_path, import_id)
         .await
         .context("failed to parse OSM PBF dump")?;
-    let count = points.len();
+    let count = dataset.points.len();
     info!(
         import_id,
         water_point_count = count,
+        place_count = dataset.places.len(),
         "finished parsing OSM PBF dump"
     );
 
     info!(
         import_id,
         water_point_count = count,
-        "replacing SQLite water points"
+        place_count = dataset.places.len(),
+        "replacing SQLite OSM dataset"
     );
-    store::replace_water_points_for_import(pool, &points, Utc::now(), import_id).await?;
+    store::replace_osm_dataset_for_import(
+        pool,
+        &dataset.points,
+        &dataset.places,
+        Utc::now(),
+        import_id,
+    )
+    .await?;
     info!(import_id, "clearing route analysis cache after OSM import");
     store::clear_route_cache(pool).await?;
 
@@ -441,18 +451,27 @@ impl<R: Read> Read for ProgressReader<R> {
     }
 }
 
-async fn parse_drinking_water_points(path: PathBuf, import_id: i64) -> Result<Vec<OsmWaterPoint>> {
+struct ParsedOsmDataset {
+    points: Vec<OsmWaterPoint>,
+    places: Vec<OsmPlace>,
+}
+
+async fn parse_osm_dataset(path: PathBuf, import_id: i64) -> Result<ParsedOsmDataset> {
     let scan = run_pbf_phase(
         &path,
         import_id,
-        "scanning_water_objects",
+        "scanning_osm_objects",
         scan_water_objects_blocking,
     )
     .await?;
     let mut points = scan.points;
+    let places = scan.places.into_values().collect();
 
     if scan.ways.is_empty() {
-        return Ok(points.into_values().collect());
+        return Ok(ParsedOsmDataset {
+            points: points.into_values().collect(),
+            places,
+        });
     }
 
     let required_node_ids = Arc::new(
@@ -489,7 +508,10 @@ async fn parse_drinking_water_points(path: PathBuf, import_id: i64) -> Result<Ve
         );
     }
 
-    Ok(points.into_values().collect())
+    Ok(ParsedOsmDataset {
+        points: points.into_values().collect(),
+        places,
+    })
 }
 
 async fn run_pbf_phase<T, F>(path: &Path, import_id: i64, phase: &'static str, task: F) -> Result<T>
@@ -557,6 +579,7 @@ fn estimated_read_percent(bytes_read: u64, total_bytes: u64) -> f64 {
 #[derive(Default)]
 struct WaterObjectScan {
     points: HashMap<(OsmElementType, i64), OsmWaterPoint>,
+    places: HashMap<i64, OsmPlace>,
     ways: HashMap<i64, WaterWay>,
 }
 
@@ -591,6 +614,9 @@ fn scan_water_objects_blocking(
                         if let Some(point) = water_point_from_parts(node.id(), point, node.tags()) {
                             scan.points.insert((point.osm_type, point.osm_id), point);
                         }
+                        if let Some(place) = place_from_parts(node.id(), point, node.tags()) {
+                            scan.places.insert(place.osm_id, place);
+                        }
                     }
                     Element::DenseNode(node) => {
                         let point = RoutePoint {
@@ -600,6 +626,9 @@ fn scan_water_objects_blocking(
                         };
                         if let Some(point) = water_point_from_parts(node.id(), point, node.tags()) {
                             scan.points.insert((point.osm_type, point.osm_id), point);
+                        }
+                        if let Some(place) = place_from_parts(node.id(), point, node.tags()) {
+                            scan.places.insert(place.osm_id, place);
                         }
                     }
                     Element::Way(way) => {
@@ -621,6 +650,7 @@ fn scan_water_objects_blocking(
             WaterObjectScan::default,
             |mut left, right| {
                 left.points.extend(right.points);
+                left.places.extend(right.places);
                 left.ways.extend(right.ways);
                 left
             },
@@ -694,6 +724,42 @@ fn water_point_from_parts<'a>(
         lat: point.lat,
         lon: point.lon,
         name,
+    })
+}
+
+fn place_from_parts<'a>(
+    osm_id: i64,
+    point: RoutePoint,
+    tags: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<OsmPlace> {
+    let mut place_type = None;
+    let mut name = None;
+    let mut aliases = Vec::new();
+    for (key, value) in tags {
+        match key {
+            "place" if matches!(value, "city" | "town" | "village" | "hamlet") => {
+                place_type = Some(value.to_owned());
+            }
+            "name" => name = Some(value.trim().to_owned()),
+            "alt_name" | "official_name" | "name:en" | "name:fr" if !value.trim().is_empty() => {
+                aliases.push(value.trim().to_owned());
+            }
+            _ => {}
+        }
+    }
+    let name = name.filter(|name| !name.is_empty())?;
+    let place_type = place_type?;
+    let search_text = std::iter::once(name.clone())
+        .chain(aliases)
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(OsmPlace {
+        osm_id,
+        name,
+        place_type,
+        lat: point.lat,
+        lon: point.lon,
+        search_text,
     })
 }
 
@@ -814,6 +880,38 @@ mod tests {
         assert_eq!(point.osm_id, 12);
         assert_eq!(point.osm_type, OsmElementType::Node);
         assert_eq!(point.name.as_deref(), Some("Village Tap"));
+    }
+
+    #[test]
+    fn extracts_named_place_and_search_aliases() {
+        let place = place_from_parts(
+            7,
+            RoutePoint {
+                lat: 45.0,
+                lon: 5.0,
+                ele: None,
+            },
+            [
+                ("place", "village"),
+                ("name", "Saint-Pierre"),
+                ("alt_name", "St Pierre"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(place.place_type, "village");
+        assert_eq!(place.name, "Saint-Pierre");
+        assert!(place.search_text.contains("St Pierre"));
+    }
+
+    #[test]
+    fn ignores_unsupported_or_unnamed_places() {
+        let point = RoutePoint {
+            lat: 45.0,
+            lon: 5.0,
+            ele: None,
+        };
+        assert!(place_from_parts(1, point, [("place", "suburb"), ("name", "Centre")]).is_none());
+        assert!(place_from_parts(2, point, [("place", "town")]).is_none());
     }
 
     #[test]

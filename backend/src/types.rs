@@ -140,3 +140,40 @@ pub struct OsmWaterPoint {
     pub lon: f64,
     pub name: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OsmPlace {
+    pub osm_id: i64,
+    pub name: String,
+    pub place_type: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub search_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlaceSearchResult {
+    pub osm_id: i64,
+    pub name: String,
+    pub place_type: String,
+    pub lat: f64,
+    pub lon: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NearbyWaterPoint {
+    pub osm_type: OsmElementType,
+    pub osm_id: i64,
+    pub name: Option<String>,
+    pub lat: f64,
+    pub lon: f64,
+    pub distance_m: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NearbyResponse {
+    pub center: RoutePoint,
+    pub radius_m: u32,
+    pub water_points: Vec<NearbyWaterPoint>,
+    pub truncated: bool,
+}

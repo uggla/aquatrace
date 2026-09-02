@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::SqlitePool;
 
-use crate::types::{AnalyzeResponse, BBox, OsmElementType, OsmWaterPoint};
+use crate::types::{
+    AnalyzeResponse, BBox, OsmElementType, OsmPlace, OsmWaterPoint, PlaceSearchResult,
+};
 
 pub const IMPORT_STATUS_RUNNING: &str = "running";
 pub const IMPORT_STATUS_SUCCESS: &str = "success";
@@ -106,12 +108,64 @@ pub async fn water_points_in_bbox(pool: &SqlitePool, bbox: BBox) -> Result<Vec<O
         .collect()
 }
 
+pub async fn search_places(
+    pool: &SqlitePool,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<PlaceSearchResult>> {
+    let fts_query = fts_prefix_query(query);
+    if fts_query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, (i64, String, String, f64, f64)>(
+        "SELECT p.osm_id, p.name, p.place_type, p.lat, p.lon
+         FROM places_fts
+         JOIN places p ON p.id = CAST(places_fts.place_id AS INTEGER)
+         WHERE places_fts MATCH ?1
+         ORDER BY bm25(places_fts), length(p.name), p.name
+         LIMIT ?2",
+    )
+    .bind(fts_query)
+    .bind(i64::try_from(limit).context("place search limit does not fit in i64")?)
+    .fetch_all(pool)
+    .await
+    .context("failed to search places")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(osm_id, name, place_type, lat, lon)| PlaceSearchResult {
+            osm_id,
+            name,
+            place_type,
+            lat,
+            lon,
+        })
+        .collect())
+}
+
+fn fts_prefix_query(query: &str) -> String {
+    query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("\"{token}\"*"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub async fn has_water_points(pool: &SqlitePool) -> Result<bool> {
     let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM water_points")
         .fetch_one(pool)
         .await
         .context("failed to count water points")?;
 
+    Ok(count > 0)
+}
+
+pub async fn has_places(pool: &SqlitePool) -> Result<bool> {
+    let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM places")
+        .fetch_one(pool)
+        .await
+        .context("failed to count places")?;
     Ok(count > 0)
 }
 
@@ -216,13 +270,133 @@ pub async fn replace_water_points(
     replace_water_points_inner(pool, points, now, None).await
 }
 
-pub(crate) async fn replace_water_points_for_import(
+pub(crate) async fn replace_osm_dataset_for_import(
     pool: &SqlitePool,
     points: &[OsmWaterPoint],
+    places: &[OsmPlace],
     now: DateTime<Utc>,
     import_id: i64,
 ) -> Result<()> {
-    replace_water_points_inner(pool, points, now, Some(import_id)).await
+    let refreshed_at = now.to_rfc3339();
+    let mut tx = pool
+        .begin()
+        .await
+        .context("failed to start OSM dataset update")?;
+
+    sqlx::query("DROP TABLE IF EXISTS water_points_next")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE TABLE water_points_next (
+            osm_type TEXT NOT NULL CHECK (osm_type IN ('node', 'way')),
+            osm_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, name TEXT,
+            last_refresh TEXT NOT NULL, PRIMARY KEY (osm_type, osm_id)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let write_started_at = std::time::Instant::now();
+    let mut last_progress_log = std::time::Instant::now();
+    for (index, point) in points.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO water_points_next (osm_type, osm_id, lat, lon, name, last_refresh)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(point.osm_type.as_str())
+        .bind(point.osm_id)
+        .bind(point.lat)
+        .bind(point.lon)
+        .bind(&point.name)
+        .bind(&refreshed_at)
+        .execute(&mut *tx)
+        .await
+        .context("failed to insert imported water point")?;
+        if last_progress_log.elapsed() >= std::time::Duration::from_secs(5) {
+            tracing::info!(
+                import_id,
+                phase = "writing_water_points",
+                inserted = index + 1,
+                total = points.len(),
+                elapsed_seconds = write_started_at.elapsed().as_secs(),
+                "OSM import in progress"
+            );
+            last_progress_log = std::time::Instant::now();
+        }
+    }
+
+    sqlx::query("DROP TABLE IF EXISTS places_next")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE TABLE places_next (
+            id INTEGER PRIMARY KEY, osm_id INTEGER NOT NULL UNIQUE, name TEXT NOT NULL,
+            place_type TEXT NOT NULL CHECK (place_type IN ('city', 'town', 'village', 'hamlet')),
+            lat REAL NOT NULL, lon REAL NOT NULL, search_text TEXT NOT NULL,
+            last_refresh TEXT NOT NULL
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    last_progress_log = std::time::Instant::now();
+    for (index, place) in places.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO places_next (osm_id, name, place_type, lat, lon, search_text, last_refresh)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind(place.osm_id).bind(&place.name).bind(&place.place_type).bind(place.lat)
+        .bind(place.lon).bind(&place.search_text).bind(&refreshed_at)
+        .execute(&mut *tx).await.context("failed to insert imported place")?;
+        if last_progress_log.elapsed() >= std::time::Duration::from_secs(5) {
+            tracing::info!(
+                import_id,
+                phase = "writing_places",
+                inserted = index + 1,
+                total = places.len(),
+                elapsed_seconds = write_started_at.elapsed().as_secs(),
+                "OSM import in progress"
+            );
+            last_progress_log = std::time::Instant::now();
+        }
+    }
+
+    sqlx::query("DELETE FROM places_fts")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DROP TABLE water_points")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("ALTER TABLE water_points_next RENAME TO water_points")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_water_points_lat_lon ON water_points(lat, lon)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DROP TABLE places").execute(&mut *tx).await?;
+    sqlx::query("ALTER TABLE places_next RENAME TO places")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_places_lat_lon ON places(lat, lon)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO places_fts (name, search_text, place_id)
+         SELECT name, search_text, CAST(id AS TEXT) FROM places",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit()
+        .await
+        .context("failed to commit OSM dataset update")?;
+    tracing::info!(
+        import_id,
+        phase = "writing_sqlite",
+        water_point_count = points.len(),
+        place_count = places.len(),
+        elapsed_seconds = write_started_at.elapsed().as_secs(),
+        "finished writing OSM dataset to SQLite"
+    );
+    Ok(())
 }
 
 async fn replace_water_points_inner(
@@ -513,6 +687,42 @@ mod tests {
                 .iter()
                 .any(|point| point.osm_type == OsmElementType::Way)
         );
+    }
+
+    #[tokio::test]
+    async fn imported_places_are_found_by_accent_insensitive_prefix() {
+        let pool = pool().await;
+        replace_osm_dataset_for_import(
+            &pool,
+            &[],
+            &[
+                OsmPlace {
+                    osm_id: 1,
+                    name: "Échirolles".to_owned(),
+                    place_type: "town".to_owned(),
+                    lat: 45.14,
+                    lon: 5.71,
+                    search_text: "Échirolles Echirolles".to_owned(),
+                },
+                OsmPlace {
+                    osm_id: 2,
+                    name: "Grenoble".to_owned(),
+                    place_type: "city".to_owned(),
+                    lat: 45.18,
+                    lon: 5.72,
+                    search_text: "Grenoble".to_owned(),
+                },
+            ],
+            Utc::now(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        let found = search_places(&pool, "echi", 10).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "Échirolles");
+        assert!(has_places(&pool).await.unwrap());
     }
 
     #[tokio::test]

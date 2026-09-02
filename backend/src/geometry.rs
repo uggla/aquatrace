@@ -2,7 +2,7 @@ use rstar::{AABB, PointDistance, RTree, RTreeObject};
 
 use crate::{
     gpx_parser::haversine_m,
-    types::{OsmWaterPoint, RoutePoint, RouteSummary, WaterPointResult},
+    types::{NearbyWaterPoint, OsmWaterPoint, RoutePoint, RouteSummary, WaterPointResult},
 };
 
 #[derive(Debug, Clone)]
@@ -134,6 +134,43 @@ pub fn project_water_points(
 
 pub fn project_point(route: &RouteSummary, lat: f64, lon: f64) -> Option<Projection> {
     RouteIndex::new(route)?.project_point(lat, lon)
+}
+
+pub fn nearby_water_points(
+    center: RoutePoint,
+    water_points: &[OsmWaterPoint],
+    radius_m: f64,
+    limit: usize,
+) -> (Vec<NearbyWaterPoint>, bool) {
+    let mut nearby: Vec<_> = water_points
+        .iter()
+        .filter_map(|point| {
+            let distance_m = haversine_m(
+                center,
+                RoutePoint {
+                    lat: point.lat,
+                    lon: point.lon,
+                    ele: None,
+                },
+            );
+            (distance_m <= radius_m).then(|| NearbyWaterPoint {
+                osm_type: point.osm_type,
+                osm_id: point.osm_id,
+                name: point.name.clone(),
+                lat: point.lat,
+                lon: point.lon,
+                distance_m: distance_m.round(),
+            })
+        })
+        .collect();
+    nearby.sort_by(|left, right| {
+        left.distance_m
+            .partial_cmp(&right.distance_m)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let truncated = nearby.len() > limit;
+    nearby.truncate(limit);
+    (nearby, truncated)
 }
 
 fn project_on_segment(segment: &RouteSegment, point: [f64; 2]) -> Projection {
@@ -284,6 +321,42 @@ mod tests {
         assert!(projected.iter().any(|point| {
             point.osm_type == crate::types::OsmElementType::Way && point.osm_id == 140_994_931
         }));
+    }
+
+    #[test]
+    fn filters_sorts_and_truncates_nearby_points() {
+        let center = RoutePoint {
+            lat: 45.0,
+            lon: 5.0,
+            ele: None,
+        };
+        let points = vec![
+            OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Node,
+                osm_id: 1,
+                lat: 45.02,
+                lon: 5.0,
+                name: None,
+            },
+            OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Node,
+                osm_id: 2,
+                lat: 45.001,
+                lon: 5.0,
+                name: None,
+            },
+            OsmWaterPoint {
+                osm_type: crate::types::OsmElementType::Node,
+                osm_id: 3,
+                lat: 45.002,
+                lon: 5.0,
+                name: None,
+            },
+        ];
+        let (nearby, truncated) = nearby_water_points(center, &points, 1_000.0, 1);
+        assert!(truncated);
+        assert_eq!(nearby.len(), 1);
+        assert_eq!(nearby[0].osm_id, 2);
     }
 
     #[ignore = "performance regression fixture; run with --ignored --nocapture"]

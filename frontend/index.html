@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="AquaTrace analyzes GPX routes and finds nearby drinking water points from OpenStreetMap, with distance from the route and kilometer markers."
+      content="AquaTrace finds drinking water from OpenStreetMap along GPX routes or around a location anywhere in Europe."
     />
     <meta name="theme-color" content="#106ba3" />
     <meta name="robots" content="index, follow" />
@@ -25,7 +25,7 @@
     />
     <meta
       property="og:description"
-      content="Upload a GPX route, view it on a trail map, and find nearby OpenStreetMap drinking water points with route distance and kilometer markers."
+      content="Find OpenStreetMap drinking water along a GPX route or around any selected location in Europe."
     />
     <meta
       property="og:image"
@@ -59,7 +59,7 @@
         "applicationCategory": "TravelApplication",
         "operatingSystem": "Web",
         "inLanguage": "en-US",
-        "description": "AquaTrace analyzes GPX routes and finds nearby drinking water points from OpenStreetMap, with distance from the route and kilometer markers.",
+        "description": "AquaTrace finds drinking water from OpenStreetMap along GPX routes or around a selected location in Europe.",
         "image": "https://aquatrace.uggla.fr/aquatrace-title.jpg",
         "offers": {
           "@type": "Offer",
@@ -71,7 +71,9 @@
           "Drinking water points from OpenStreetMap",
           "Distance from route",
           "Kilometer marker along route",
-          "OpenTopoMap route display"
+          "OpenTopoMap route display",
+          "Nearby water search around a map location",
+          "Local place search"
         ]
       }
     </script>
@@ -95,6 +97,14 @@
         <p class="attribution">OpenTopoMap + OpenStreetMap</p>
       </header>
 
+      <nav class="feature-nav" aria-label="AquaTrace features">
+        <div role="tablist" aria-label="Water point search mode">
+          <a href="#route" role="tab" data-view="route" aria-controls="route-view">Along a GPX route</a>
+          <a href="#nearby" role="tab" data-view="nearby" aria-controls="nearby-view">Around a location</a>
+        </div>
+      </nav>
+
+      <div id="route-view" class="route-view" data-view-panel="route" role="tabpanel">
       <section class="controls-band" aria-label="Route analysis controls">
         <form id="upload-form" class="upload-form">
           <label for="gpx-file">Upload GPX</label>
@@ -163,7 +173,7 @@
           </div>
         </section>
 
-        <div class="map-shell">
+        <div id="route-map-shell" class="map-shell">
           <button
             id="fullscreen-button"
             class="fullscreen-button"
@@ -186,7 +196,7 @@
               <path d="m4 9 5-5m6 0 5 5M4 15l5 5m6 0 5-5"></path>
             </svg>
           </button>
-          <div id="map" class="route-map" aria-label="Route map"></div>
+          <div id="route-map" class="route-map" aria-label="Route map"></div>
           <div id="map-empty" class="map-empty">
             <strong>No route loaded</strong>
             <span>Upload a GPX file to display the track and nearby water points.</span>
@@ -244,6 +254,77 @@
           </div>
         </aside>
       </section>
+      </div>
+
+      <div id="nearby-view" class="nearby-view" data-view-panel="nearby" role="tabpanel" hidden>
+        <section class="controls-band" aria-label="Nearby water point controls">
+          <div class="place-search">
+            <label for="place-query">Find a city, town or village</label>
+            <div class="place-search-box">
+              <input id="place-query" type="search" autocomplete="off" placeholder="Type at least 3 characters" aria-autocomplete="list" aria-controls="place-suggestions" />
+              <ul id="place-suggestions" class="place-suggestions" role="listbox" hidden></ul>
+            </div>
+            <small>Or click anywhere on the map to choose a location.</small>
+          </div>
+
+          <p class="coverage-notice">
+            Drinking-water data is currently available for Europe only. Need coverage elsewhere?
+            <a href="https://github.com/uggla/aquatrace/issues/new">Open an issue on GitHub</a>.
+          </p>
+
+          <fieldset class="distance-filter">
+            <legend>Search radius <span id="nearby-radius-label">1 km</span></legend>
+            <div class="segmented" role="group" aria-label="Water point search radius">
+              <button type="button" data-nearby-radius="500">500 m</button>
+              <button type="button" data-nearby-radius="1000" class="active">1 km</button>
+              <button type="button" data-nearby-radius="5000">5 km</button>
+              <button type="button" data-nearby-radius="20000">20 km</button>
+            </div>
+          </fieldset>
+
+          <label class="map-style-field" for="nearby-map-style">
+            Map background
+            <select id="nearby-map-style" name="nearby-map-style">
+              <option value="opentopo" selected>OpenTopoMap</option>
+              <option value="openstreetmap">OpenStreetMap</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="status-line" aria-live="polite">
+          <p id="nearby-status-message" data-tone="neutral">Search for a place or click on the map.</p>
+        </section>
+
+        <section class="workspace">
+          <section class="analysis-summary" aria-label="Nearby search summary">
+            <div class="results-header">
+              <div>
+                <h2>Water points around a location</h2>
+                <p id="nearby-location-summary">No location selected</p>
+              </div>
+              <span id="nearby-water-count" class="count-pill">0 water points</span>
+            </div>
+          </section>
+
+          <div id="nearby-map-shell" class="map-shell">
+            <button id="nearby-fullscreen-button" class="fullscreen-button" type="button" aria-label="Open map fullscreen" title="Fullscreen map"><span aria-hidden="true"></span></button>
+            <button id="nearby-reset-view-button" class="reset-view-button" type="button" aria-label="Fit the search area on the map" title="Fit search area to map" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"></path><path d="m4 9 5-5m6 0 5 5M4 15l5 5m6 0 5-5"></path></svg>
+            </button>
+            <div id="nearby-map" class="route-map" aria-label="Nearby water point map"></div>
+            <div id="nearby-map-empty" class="map-empty"><strong>Choose a location</strong><span>Search for a place or click on the map.</span></div>
+          </div>
+
+          <aside class="results-panel" aria-label="Nearby water points">
+            <div class="table-wrap nearby-table-wrap">
+              <table>
+                <thead><tr><th>Distance</th><th>Name</th><th>Coordinates</th><th><span class="street-view-header">Street View <button class="info-tooltip-trigger" type="button" aria-label="About Street View availability" aria-describedby="nearby-street-view-tooltip"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8"></circle><path d="M10 9v5"></path><circle cx="10" cy="6" r="0.8"></circle></svg><span id="nearby-street-view-tooltip" class="info-tooltip" role="tooltip">If no icon is shown, no Street View data was returned for that point. If no icons are shown at all, Street View may be unavailable or the API quota may have been exceeded.</span></button></span></th></tr></thead>
+                <tbody id="nearby-water-table"><tr><td colspan="4" class="empty-cell">No location selected yet.</td></tr></tbody>
+              </table>
+            </div>
+          </aside>
+        </section>
+      </div>
 
       <footer class="app-footer">
         <div class="made-with">
