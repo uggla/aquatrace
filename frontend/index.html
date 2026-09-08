@@ -50,37 +50,30 @@
       name="twitter:image"
       content="https://aquatrace.uggla.fr/aquatrace-title.jpg"
     />
-    <script type="application/ld+json">
-      {
-        "@context": "https://schema.org",
-        "@type": "WebApplication",
-        "name": "AquaTrace",
-        "url": "https://aquatrace.uggla.fr/",
-        "applicationCategory": "TravelApplication",
-        "operatingSystem": "Web",
-        "inLanguage": "en-US",
-        "description": "AquaTrace finds drinking water from OpenStreetMap along GPX routes or around a selected location in Europe.",
-        "image": "https://aquatrace.uggla.fr/aquatrace-title.jpg",
-        "offers": {
-          "@type": "Offer",
-          "price": "0",
-          "priceCurrency": "EUR"
-        },
-        "featureList": [
-          "GPX route upload",
-          "Drinking water points from OpenStreetMap",
-          "Distance from route",
-          "Kilometer marker along route",
-          "OpenTopoMap route display",
-          "Nearby water search around a map location",
-          "Local place search"
-        ]
-      }
-    </script>
     <title>AquaTrace | Find drinking water along GPX routes</title>
   </head>
   <body>
-    <main class="app-shell">
+    <main class="app-shell" itemscope itemtype="https://schema.org/WebApplication">
+      <meta itemprop="name" content="AquaTrace" />
+      <link itemprop="url" href="https://aquatrace.uggla.fr/" />
+      <meta itemprop="applicationCategory" content="TravelApplication" />
+      <meta itemprop="operatingSystem" content="Web" />
+      <meta itemprop="inLanguage" content="en-US" />
+      <meta
+        itemprop="description"
+        content="AquaTrace finds drinking water from OpenStreetMap along GPX routes or around a selected location in Europe."
+      />
+      <meta itemprop="featureList" content="GPX route upload" />
+      <meta itemprop="featureList" content="Drinking water points from OpenStreetMap" />
+      <meta itemprop="featureList" content="Distance from route" />
+      <meta itemprop="featureList" content="Kilometer marker along route" />
+      <meta itemprop="featureList" content="OpenTopoMap route display" />
+      <meta itemprop="featureList" content="Nearby water search around a map location" />
+      <meta itemprop="featureList" content="Local place search" />
+      <span itemprop="offers" itemscope itemtype="https://schema.org/Offer" hidden>
+        <meta itemprop="price" content="0" />
+        <meta itemprop="priceCurrency" content="EUR" />
+      </span>
       <header class="page-header">
         <div class="title-frame">
           <picture>
@@ -90,6 +83,7 @@
               src="/aquatrace-title.jpg"
               width="1938"
               height="544"
+              itemprop="image"
               alt="AquaTrace - Find drinking water along your GPX routes."
             />
           </picture>
