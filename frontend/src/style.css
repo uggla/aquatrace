@@ -338,10 +338,12 @@ body {
 
 .status-line p {
   display: inline-flex;
+  max-width: 100%;
   align-items: center;
   min-height: 28px;
   padding: 4px 10px;
   border-radius: 999px;
+  overflow-wrap: anywhere;
 }
 
 .status-line [data-tone='success'] {
@@ -360,9 +362,18 @@ body {
 
 .workspace {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: stretch;
+}
+
+.analysis-summary,
+.map-shell,
+.results-panel,
+.elevation-profile,
+.table-wrap {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .analysis-summary {
@@ -550,6 +561,10 @@ body {
   margin: 0;
 }
 
+.results-header > div {
+  min-width: 0;
+}
+
 .results-header h2 {
   font-size: 1rem;
 }
@@ -557,6 +572,7 @@ body {
 .results-header p {
   color: var(--aquatrace-muted);
   font-size: 0.9rem;
+  overflow-wrap: anywhere;
 }
 
 .count-pill,
@@ -1155,6 +1171,70 @@ body {
   .results-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  #route-view .table-wrap table,
+  #nearby-view .table-wrap table {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+  }
+
+  #route-view .table-wrap th:nth-child(3),
+  #route-view .table-wrap td:nth-child(3),
+  #route-view .table-wrap th:nth-child(4),
+  #route-view .table-wrap td:nth-child(4),
+  #nearby-view .table-wrap th:nth-child(2),
+  #nearby-view .table-wrap td:nth-child(2),
+  #nearby-view .table-wrap th:nth-child(3),
+  #nearby-view .table-wrap td:nth-child(3) {
+    display: none;
+  }
+
+  #route-view .table-wrap th:nth-child(1),
+  #route-view .table-wrap td:nth-child(1) {
+    width: 22%;
+  }
+
+  #route-view .table-wrap th:nth-child(2),
+  #route-view .table-wrap td:nth-child(2) {
+    width: 34%;
+  }
+
+  #route-view .table-wrap th:nth-child(5),
+  #route-view .table-wrap td:nth-child(5) {
+    width: 44%;
+  }
+
+  #nearby-view .table-wrap th:nth-child(1),
+  #nearby-view .table-wrap td:nth-child(1) {
+    width: 40%;
+  }
+
+  #nearby-view .table-wrap th:nth-child(4),
+  #nearby-view .table-wrap td:nth-child(4) {
+    width: 60%;
+  }
+
+  #route-view .table-wrap th,
+  #route-view .table-wrap td,
+  #nearby-view .table-wrap th,
+  #nearby-view .table-wrap td {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  #route-view .table-wrap th:last-child,
+  #route-view .table-wrap td:last-child,
+  #nearby-view .table-wrap th:last-child,
+  #nearby-view .table-wrap td:last-child {
+    text-align: center;
+  }
+
+  #route-view .street-view-header,
+  #nearby-view .street-view-header {
+    width: 100%;
+    justify-content: center;
   }
 
   .attribution {
