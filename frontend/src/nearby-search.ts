@@ -43,6 +43,7 @@ const mapShell = mustQuery<HTMLDivElement>('#nearby-map-shell');
 const mapEmpty = mustQuery<HTMLDivElement>('#nearby-map-empty');
 const fullscreenButton = mustQuery<HTMLButtonElement>('#nearby-fullscreen-button');
 const resetViewButton = mustQuery<HTMLButtonElement>('#nearby-reset-view-button');
+const locateButton = mustQuery<HTMLButtonElement>('#nearby-locate-button');
 const radiusButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-nearby-radius]'));
 
 let selectedCenter: Coordinates | null = null;
@@ -58,6 +59,7 @@ let nearbyController: AbortController | null = null;
 let streetViewController: AbortController | null = null;
 let radiusCircle: L.Circle | null = null;
 let centerMarker: L.CircleMarker | null = null;
+let locationRequestId = 0;
 
 const map = L.map('nearby-map', { scrollWheelZoom: true, zoomControl: false }).setView([48.5, 9], 4);
 L.control.zoom({ position: 'topright' }).addTo(map);
@@ -116,6 +118,7 @@ for (const button of radiusButtons) {
 
 mapStyleSelect.addEventListener('change', () => setMapStyle(mapStyleSelect.value as MapStyle));
 resetViewButton.addEventListener('click', fitSearchArea);
+locateButton.addEventListener('click', locateUser);
 fullscreenButton.addEventListener('click', () => void toggleFullscreen());
 document.addEventListener('fullscreenchange', () => {
   updateFullscreenButton();
@@ -175,6 +178,7 @@ function selectPlace(place: Place): void {
 }
 
 function chooseCenter(center: Coordinates, label: string): void {
+  cancelLocationRequest();
   selectedCenter = center;
   selectedLocationName = label;
   selectedWaterPointKey = null;
@@ -186,6 +190,58 @@ function chooseCenter(center: Coordinates, label: string): void {
   waterTable.innerHTML = '<tr><td colspan="4" class="empty-cell">Searching for drinking water...</td></tr>';
   renderSearchGeometry([], true);
   void loadNearby(true);
+}
+
+function locateUser(): void {
+  if (!navigator.geolocation) {
+    setStatus('Geolocation is not supported by this browser.', 'error');
+    return;
+  }
+
+  const requestId = ++locationRequestId;
+  setLocating(true);
+  setStatus('Finding your location...', 'neutral');
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      if (requestId !== locationRequestId) return;
+      window.clearTimeout(searchTimer);
+      placeController?.abort();
+      placeInput.value = '';
+      hideSuggestions();
+      chooseCenter(
+        { lat: position.coords.latitude, lon: position.coords.longitude },
+        'My location'
+      );
+    },
+    (error) => {
+      if (requestId !== locationRequestId) return;
+      locationRequestId += 1;
+      setLocating(false);
+      setStatus(geolocationErrorMessage(error), 'error');
+    },
+    { enableHighAccuracy: true, timeout: 15_000, maximumAge: 30_000 }
+  );
+}
+
+function cancelLocationRequest(): void {
+  locationRequestId += 1;
+  setLocating(false);
+}
+
+function setLocating(locating: boolean): void {
+  locateButton.disabled = locating;
+  locateButton.classList.toggle('locating', locating);
+  locateButton.setAttribute('aria-busy', String(locating));
+  locateButton.setAttribute('aria-label', locating ? 'Finding your location' : 'Use my location');
+  locateButton.title = locating ? 'Finding your location...' : 'Use my location';
+}
+
+function geolocationErrorMessage(error: GeolocationPositionError): string {
+  if (error.code === error.PERMISSION_DENIED) return 'Location permission was denied.';
+  if (error.code === error.POSITION_UNAVAILABLE) return 'Your location could not be determined.';
+  if (error.code === error.TIMEOUT) return 'Location request timed out. Try again.';
+  return 'Your location could not be determined.';
 }
 
 async function loadNearby(fitMap: boolean): Promise<void> {

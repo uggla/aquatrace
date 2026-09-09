@@ -386,7 +386,8 @@ body {
 }
 
 .fullscreen-button,
-.reset-view-button {
+.reset-view-button,
+.locate-button {
   position: absolute;
   right: 10px;
   z-index: 700;
@@ -411,19 +412,27 @@ body {
   top: 130px;
 }
 
+.locate-button {
+  top: 174px;
+}
+
 .fullscreen-button:hover,
 .fullscreen-button:focus,
 .reset-view-button:hover,
-.reset-view-button:focus {
+.reset-view-button:focus,
+.locate-button:hover,
+.locate-button:focus {
   background: #f4f4f4;
 }
 
-.reset-view-button:disabled {
+.reset-view-button:disabled,
+.locate-button:disabled {
   cursor: default;
   opacity: 0.45;
 }
 
-.reset-view-button svg {
+.reset-view-button svg,
+.locate-button svg {
   width: 19px;
   height: 19px;
   fill: none;
@@ -431,6 +440,16 @@ body {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.8;
+}
+
+.locate-button.locating {
+  border-color: var(--aquatrace-blue);
+  background: #e6f3fb;
+  opacity: 1;
+}
+
+.locate-button.locating svg {
+  stroke: var(--aquatrace-blue);
 }
 
 .fullscreen-button span {
