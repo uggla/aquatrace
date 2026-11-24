@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1" creator="Sports Tracker" version="1.1">
+  <metadata>
+    <name>Anonymized Sports Tracker route</name>
+    <author><name>Test author</name></author>
+  </metadata>
+  <wpt lat="45.000" lon="5.001"><name>Begin</name><type>Begin</type></wpt>
+  <wpt lat="45.002" lon="5.001"><type>Left_turn</type></wpt>
+  <rte>
+    <rtept lat="45.000" lon="5.000"><ele>100</ele></rtept>
+    <rtept lat="45.001" lon="5.000"><ele>110</ele></rtept>
+    <rtept lat="45.002" lon="5.000"><ele>125</ele></rtept>
+  </rte>
+</gpx>

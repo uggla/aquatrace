@@ -825,6 +825,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_sports_tracker_route_export() {
+        assert_export_is_analyzed(include_str!(
+            "../tests/fixtures/sports_tracker_route_anonymized.gpx"
+        ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn analyzes_wetrek_export_with_empty_text_fields() {
+        assert_export_is_analyzed(include_str!(
+            "../tests/fixtures/wetrek_ios_empty_text_anonymized.gpx"
+        ))
+        .await;
+    }
+
+    async fn assert_export_is_analyzed(gpx: &str) {
+        let expected_points = serde_json::json!([
+            { "lat": 45.0, "lon": 5.0, "ele": 100.0 },
+            { "lat": 45.001, "lon": 5.0, "ele": 110.0 },
+            { "lat": 45.002, "lon": 5.0, "ele": 125.0 },
+        ]);
+
+        let (app, temp) = test_app(vec![]).await;
+        let response = app.oneshot(multipart_request(gpx)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = response_json(response).await;
+        assert_eq!(json["route"]["points"], expected_points);
+
+        let files = archive_files(&temp, "valid");
+        assert_eq!(files.len(), 1);
+        assert_eq!(decompress(&files[0]), gpx.as_bytes());
+        assert!(archive_files(&temp, "error").is_empty());
+    }
+
+    #[tokio::test]
     async fn route_cache_hit_uses_cached_analysis() {
         let (app, temp) = test_app(vec![]).await;
         let first = app.clone().oneshot(multipart_request(GPX)).await.unwrap();

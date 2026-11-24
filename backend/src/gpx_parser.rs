@@ -53,7 +53,10 @@ fn read_gpx_tolerating_known_export_issues(bytes: &[u8]) -> Result<gpx::Gpx, Gpx
         let input = normalized.as_deref().unwrap_or(bytes);
         match gpx::read(Cursor::new(input)) {
             Err(GpxError::NoStringContent) => {
-                let Some(next) = remove_empty_license_elements(input) else {
+                let Some(next) = [b"license".as_slice(), b"name", b"desc"]
+                    .into_iter()
+                    .find_map(|element| remove_empty_elements(input, element))
+                else {
                     return Err(GpxError::NoStringContent);
                 };
                 normalized = Some(next);
@@ -71,8 +74,8 @@ fn read_gpx_tolerating_known_export_issues(bytes: &[u8]) -> Result<gpx::Gpx, Gpx
     }
 }
 
-fn remove_empty_license_elements(bytes: &[u8]) -> Option<Vec<u8>> {
-    remove_elements(bytes, b"license", |content| {
+fn remove_empty_elements(bytes: &[u8], element: &[u8]) -> Option<Vec<u8>> {
+    remove_elements(bytes, element, |content| {
         content.iter().all(|byte| byte.is_ascii_whitespace())
     })
 }
@@ -390,15 +393,30 @@ mod tests {
     #[test]
     fn removes_only_empty_license_elements() {
         assert_eq!(
-            remove_empty_license_elements(b"<metadata><license /></metadata>").unwrap(),
+            remove_empty_elements(b"<metadata><license /></metadata>", b"license").unwrap(),
             b"<metadata></metadata>"
         );
         assert_eq!(
-            remove_empty_license_elements(b"<license>\r\n  </license>").unwrap(),
+            remove_empty_elements(b"<license>\r\n  </license>", b"license").unwrap(),
             b""
         );
-        assert!(remove_empty_license_elements(b"<license>MIT</license>").is_none());
-        assert!(remove_empty_license_elements(b"<licensee></licensee>").is_none());
+        assert!(remove_empty_elements(b"<license>MIT</license>", b"license").is_none());
+        assert!(remove_empty_elements(b"<licensee></licensee>", b"license").is_none());
+    }
+
+    #[test]
+    fn accepts_wetrek_track_with_empty_text_fields() {
+        let gpx = include_bytes!("../tests/fixtures/wetrek_ios_empty_text_anonymized.gpx");
+
+        assert!(matches!(
+            gpx::read(Cursor::new(gpx)),
+            Err(GpxError::NoStringContent)
+        ));
+        let parsed = read_gpx_tolerating_known_export_issues(gpx).unwrap();
+        let metadata = parsed.metadata.unwrap();
+        assert_eq!(metadata.name.as_deref(), Some("Export"));
+        assert!(metadata.time.is_some());
+        assert!(metadata.author.unwrap().name.is_none());
     }
 
     #[test]
